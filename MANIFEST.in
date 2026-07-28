@@ -1,0 +1,4 @@
+include requirements.txt
+recursive-include skeleton *.py
+recursive-include triggers *.py
+recursive-include alerts *.py
