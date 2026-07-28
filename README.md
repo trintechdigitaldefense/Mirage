@@ -21,7 +21,7 @@
 ┌────────────────────────────┐
 │        ATTACKER            │
 │   (scans your network)      │
-└──────────┬─────────────────┘
+└──────────┬────────��────────┘
 │
 ┌────────────────────┼────────────────────┐
 ▼                    ▼                    ▼
@@ -104,12 +104,9 @@ You should see decoy_connect events immediately logged.
 ## What Makes It TrinTech
 > *"We build tools that shouldn't be possible, for the people who can't afford the ones that are."*
 > 
-Mirage is a security auditing and deception utility created by **TrinTech Digital Defense**. It is specifically designed for Caribbean SMBs, medical clinics, and law firms who require robust enterprise-grade security visibility on a shoestring budget.
+Mirage is a security auditing and deception utility created by **TrinTech Digital Defense**. It is specifically designed for Caribbean SMBs, medical clinics, and law firms who require robust ente[...]
 ## Author & License
  * **Author:** Jason Junior Ramdharry
  * **Organization:** TrinTech Digital Defense
  * **Website:** trintechdigitaldefense.github.io
- * **License:** Distributed under the MIT License. For authorized security testing and defensive operations only.
-```
 
-```
