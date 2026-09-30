@@ -1,112 +1,81 @@
-<div align="center">
+# Mirage v2.0 — Active Deception Platform
 
-# Mirage v1.0.0 — TrinTech Deception Grid
+**TrinTech Digital Defense**
 
-[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20termux%20%7C%20raspberry%20pi-lightgrey.svg)](https://github.com/trintechdigitaldefense/Mirage)
-[![TrinTech Digital Defense](https://img.shields.io/badge/TrinTech-Digital%20Defense-red.svg)](https://trintechdigitaldefense.github.io)
+Always-on deception layer for non-SOC environments.  
+Fake services, decoy credentials, honey tokens, and canary files that turn attacker interaction into clear, real-time alerts.
 
-**A lightweight deception framework that tricks attackers by deploying fake network services and decoy files across your network. When an attacker touches a decoy, you get an instant alert.**
-
-*Zero external dependencies. Runs on Python stdlib + optional scapy. No Docker. No cloud. No enterprise license.*
-
-</div>
+Designed for Caribbean SMBs with zero security staff.  
+Self-hosted or run as a managed service by TrinTech.
 
 ---
 
-## How It Works
+## What You Get Instead of Another CVE List
 
+> “An attacker from 203.0.113.45 tried to log in to the fake admin account on the decoy SSH service at 14:22 UTC.”
 
-```
-┌────────────────────────────┐
-│        ATTACKER            │
-│   (scans your network)      │
-└──────────┬────────��────────┘
-│
-┌────────────────────┼────────────────────┐
-▼                    ▼                    ▼
-┌──────────┐       ┌────────────────┐    ┌──────────────┐
-│ Decoy    │       │ Decoy          │    │ Decoy        │
-│ SSH      │       │ HTTP Server    │    │ MySQL Server │
-│ (port 22)│       │ (port 80)      │    │ (port 3306)  │
-└──────────┘       └────────────────┘    └──────────────┘
-│                    │                    │
-└────────────────────┼────────────────────┘
-▼
-┌─────────────────────┐
-│   ALERT SYSTEM      │
-│  - JSON log file    │
-│  - Terminal output  │
-│  - WhatsApp link    │
-│  - Email (optional) │
-└─────────────────────┘
-```
-
-## Two Decoy Types
-
-| Type | What It Does | Example |
-|------|-------------|---------|
-| **Skeleton** (Network) | Pretends to be real services on common ports | SSH, HTTP, MySQL, nginx on ports 22, 80, 443, 3306, 8080 |
-| **Trigger** (Filesystem) | Creates fake juicy files an attacker would steal | `db_credentials.txt`, `vpn.ovpn`, `q2_report.xlsx` |
+That is the report clients actually understand and act on.
 
 ---
 
-## What Happens When An Attacker Hits a Decoy
+## Core Capabilities (v2.0)
 
-```text
-Time:  2026-07-27T12:00:00Z
-Event: DECOY_CONNECTED
-Data:  port=22, source_ip=192.168.1.105
+| Component | What it does |
+|-----------|--------------|
+| **Fake Services** | Realistic SSH, HTTP, HTTPS, MySQL, RDP, FTP, SMB banners + light interaction logging |
+| **Honey Tokens** | Decoy credentials and tokens that alert the moment they are used or exfiltrated |
+| **Canary Files** | Attractive decoy files (credentials, VPN configs, financials, API keys) that trigger on access/modification |
+| **Real-time Alerts** | Console + JSON log + optional webhook (WhatsApp / Telegram / email) |
+| **Client Reports** | Clean “we caught them” summaries instead of technical noise |
+| **Authorization** | Required ROE reference + action logging |
+| **Lightweight** | Python, modest hardware, Raspberry Pi / small VPS friendly |
 
-Warning on screen:
-WhatsApp alert link generated:
-Email alert sent (if configured):
+---
 
-```
-You see **exactly** who touched what and when. No alarms. Just data.
-## The "Impossible" Part
-| Metric | Mirage | Enterprise Deception (e.g. TrapX, Attivo) |
-|---|---|---|
-| **Cost** | $0 | $10k–$100k+/year |
-| **Dependencies** | 0 (stdlib) | Docker, Kubernetes, agents, orchestrators |
-| **Deploy time** | 3 seconds | 3 days |
-| **Hardware needed** | Any Linux box or Raspberry Pi | Enterprise-grade servers |
-| **Lines of code** | ~1,600 | Millions |
-Most cybersecurity firms say *"deception tech is only for big enterprises with big budgets."*
-Mirage proves that's a lie.
-## Quick Start & Reference
-Clone the repository and run Mirage directly using python:
+## Quick Start
+
 ```bash
-git clone [https://github.com/trintechdigitaldefense/Mirage.git](https://github.com/trintechdigitaldefense/Mirage.git)
-cd Mirage
+git clone https://github.com/trintechdigitaldefense/mirage.git
+cd mirage
+pip install -r requirements.txt
+pip install -e .
 
-# Command Reference
-python3 -m mirage deploy --network 192.168.1.0/24    # Start the deception grid
-python3 -m mirage alerts                               # View triggered alerts
-python3 -m mirage status                               # Check what's running
-python3 -m mirage kill                                  # Stop everything
-python3 -m mirage clean                                 # Remove all decoy files
-
+mirage init --org "Client Name" --auth-ref ROE-2026-001
+mirage deploy
+mirage status
+mirage alerts
+mirage report --client
+mirage stop
 ```
-## Testing Your Deployment
-While Mirage is running in a primary terminal, test it locally in a second terminal:
-```bash
-curl http://localhost:80
-python3 -m mirage alerts
 
-```
-You should see decoy_connect events immediately logged.
-## Use Cases
- 1. **Small Business Network** — Deploy on a Raspberry Pi or low-power device in the wiring closet. If an attacker taps in, you know instantly.
- 2. **Pen Test Engagement** — Leave decoys running to detect lateral movement during client assessments.
- 3. **Home Lab** — Practice detection engineering. Simulate real attacks, watch the alerts come in.
- 4. **Classroom Demo** — Show students exactly how honeypots work in 60 seconds.
-## What Makes It TrinTech
-> *"We build tools that shouldn't be possible, for the people who can't afford the ones that are."*
-> 
-Mirage is a security auditing and deception utility created by **TrinTech Digital Defense**. It is specifically designed for Caribbean SMBs, medical clinics, and law firms who require robust ente[...]
-## Author & License
- * **Author:** Jason Junior Ramdharry
- * **Organization:** TrinTech Digital Defense
- * **Website:** trintechdigitaldefense.github.io
+---
 
+## Typical Deployment Flow
+
+1. Sign Rules of Engagement with the client.
+2. `mirage init --org "..." --auth-ref "..."`
+3. `mirage deploy` (starts fake services + canary files + honey tokens)
+4. Leave it running (or manage via systemd).
+5. When an attacker touches a decoy → real-time alert.
+6. Deliver clean client report: who touched what and when.
+
+This turns a one-time engagement into continuous active defense and monthly recurring value.
+
+---
+
+## Authorized Use Only
+
+Mirage is for authorized defensive deception only.  
+Deploy only on networks you own or have explicit written permission to protect.  
+Unauthorized use may violate the Trinidad and Tobago Cybercrimes Act.
+
+---
+
+## Contact
+
+TrinTech Digital Defense  
+Email: trintechdigitaldefense@gmail.com  
+WhatsApp: +1-868-362-0679  
+Website: https://trintechdigitaldefense.github.io/
+
+Built in Trinidad & Tobago for the Caribbean.
