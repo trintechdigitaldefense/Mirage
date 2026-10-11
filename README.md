@@ -1,112 +1,54 @@
 # Mirage — Active Deception Platform
 
 **TrinTech Digital Defense** · Trinidad & Tobago 🇹🇹  
-**v2.1 — "The Trap That Talks"**
+**v2.2**
 
-Lightweight deception layer for networks that have no security team.  
-Fake services, honey tokens, breadcrumb trails, SSH jail and decoy shares turn attacker interaction into clear, owner-readable stories — with legal-grade evidence and hard safety guardrails.
-
-Designed for Caribbean SMBs. Self-hosted or run as a managed service by TrinTech.  
-Pairs with **Sentinel** (continuous monitoring) and **FortifyOne** (professional audit).
-
----
-
-## What Clients Actually Receive
-
-> “At 14:22 UTC, source 203.0.113.45 logged into the decoy SSH and ran `find / -name '*.pem'`. Full command transcript attached.”
-
-That is the kind of report business owners understand, forward, and renew for.
-
----
-
-## What’s in v2.1
-
-### Revenue tier
-| Feature | Command |
-|---------|---------|
-| **Story Report** | `mirage report --story` |
-| **Attack-Intent Engine** | built into alerts + reports |
-| **Decoy Document Factory** | `mirage bait [--sector] [--write]` |
-
-### Depth tier
-| Feature | Notes |
-|---------|-------|
-| **Breadcrumb Trails** | Cross-linked decoys, hop logging |
-| **Beaconing Honey Tokens** | Phone-home AWS/Azure-style secrets |
-| **Decoy SMB Shares** | Finance / HR / Backups on port 4450 |
-| **SSH Credential Jail** | Accept any password, fake shell, log commands, 5-min cap |
-
-### Trust / Safety tier
-| Feature | Command |
-|---------|---------|
-| **Multi-site Mesh** | `mirage mesh [status\|register\|group]` |
-| **Coverage Heatmap** | `mirage coverage` |
-| **Legal Evidence Bundle** | `mirage evidence [--hours 24]` |
-| **Realism Rotation** | `mirage rotate` |
-| **Anti-abuse Guardrails** | rate limits + circuit breaker (always on by default) |
+Fake services, SSH jail, honey tokens, trails, SMB shares, cloud decoys and email canaries — turned into owner-readable stories and legal-grade evidence.
 
 ---
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/trintechdigitaldefense/Mirage.git
-cd Mirage
-pip install -r requirements.txt
-pip install -e .
+pip install -r requirements.txt && pip install -e .
 
+mirage packs                                 # list industry packs
 mirage init --org "Acme Medical" --auth-ref ROE-2026-001 --sector clinic
 mirage deploy
-mirage status
-mirage coverage
-mirage alerts
+mirage health
 mirage report --story
 mirage evidence
-mirage mesh
 ```
 
-Deploy starts: fake services + SSH jail, canaries/trails/tokens, SMB, beacon listener, mesh registration, guardrails.
+## Commands
 
----
+| Command | Purpose |
+|---------|---------|
+| `deploy` | Full stack: services, SSH jail, canaries, SMB, beacons, cloud decoy |
+| `report --story` | Client narrative |
+| `alerts` | Events + intent |
+| `coverage` | Heatmap / blind spots |
+| `evidence` | SHA-256 evidence zip |
+| `mesh` | Multi-site registry |
+| `rotate` | Banner/hostname cosmetics |
+| `health` | SLA / heartbeat for portal |
+| `packs` | Industry vertical packs |
+| `killswitch [--reset]` | Trip or clear circuit breaker |
+| `bait [--write]` | Preview/write decoy docs |
 
-## Typical Engagement Flow
+## Feature map
 
-1. Sign Rules of Engagement  
-2. `mirage init --org "..." --auth-ref "..." --sector ...`  
-3. `mirage deploy`  
-4. Leave running  
-5. Interaction → alert + intent + (optional) SSH command transcript  
-6. Deliver **story report** + **evidence zip** when needed  
+**v2.1 core:** story report · intent · bait factory · trails · beacons · SMB · SSH jail · mesh · coverage · evidence · rotation · guardrails  
 
----
-
-## Continuous Protection Package
-
-| Component | Role |
-|-----------|------|
-| **FortifyOne** | Point-in-time network audit |
-| **Sentinel** | Continuous monitoring, FIM, reverse-shell detection |
-| **Mirage** | Active deception (this tool) |
-
----
+**v2.2 stretch:** industry packs (clinic/retail/legal/finance/hospitality) · AD decoy accounts · cloud decoy bucket · email canaries · health heartbeat · killswitch · live banner rotation on deploy
 
 ## Doctrine
 
-Deception stays **passive**. Mirage watches, records and reports — it never retaliates, relays, or touches third-party systems. Guardrails enforce rate limits and a circuit breaker so the product cannot be abused as a reflector or pivot.
+Passive observation only. No relay, no attack-back. Rate limits + circuit breaker enforced.
 
 ---
 
-## Contact
-
-**TrinTech Digital Defense**  
-Email: trintechdigitaldefense@gmail.com  
-WhatsApp: +1 (868) 362-0679  
-Web: https://trintechdigitaldefense.github.io
-
----
-
-Authorized defensive deception only.  
-Deploy only on networks you own or have explicit written permission to protect.  
-Unauthorized use may violate the Trinidad & Tobago Cybercrime Act.
+**TrinTech Digital Defense** · trintechdigitaldefense@gmail.com · +1 (868) 362-0679  
+Authorized defensive use only.
 
 *Defend. Detect. Dominate.*
