@@ -6,6 +6,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "data_dir": str(Path.home() / ".mirage"),
     "organization_name": "",
     "authorization_ref": "",
+    "sector": "general",  # general | clinic | retail | legal
     "webhook_url": None,
     "enable_console_alerts": True,
     "listen_address": "0.0.0.0",
