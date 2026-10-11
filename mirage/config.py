@@ -6,29 +6,38 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "data_dir": str(Path.home() / ".mirage"),
     "organization_name": "",
     "authorization_ref": "",
-    "sector": "general",  # general | clinic | retail | legal
+    "sector": "general",
+    "site_id": "",
     "webhook_url": None,
     "enable_console_alerts": True,
     "listen_address": "0.0.0.0",
     "ports": {
-        "ssh": 2222,          # avoid conflicting with real SSH
+        "ssh": 2222,
         "http": 8080,
         "https": 8443,
         "mysql": 3307,
         "ftp": 2121,
         "rdp": 3389,
     },
-    # Feature 06 — credential-harvesting SSH jail
+    # Feature 06 — SSH jail
     "ssh_jail_enabled": True,
-    "ssh_jail_timeout": 300,  # 5 minutes hard cap
-    # Feature 08 — decoy SMB
+    "ssh_jail_timeout": 300,
+    # Feature 08 — SMB
     "smb_enabled": True,
     "smb_port": 4450,
     "smb_shares": ["Finance", "HR", "Backups"],
-    # Feature 07 — beaconing tokens
+    # Feature 07 — beacons
     "beacon_enabled": True,
     "beacon_port": 8888,
     "beacon_base_url": "",
+    # Feature 12 — guardrails
+    "guardrails_enabled": True,
+    "rate_limit_per_source": 30,
+    "rate_limit_window_sec": 60,
+    "circuit_breaker_threshold": 500,
+    "circuit_breaker_window_sec": 60,
+    # Feature 11 — cosmetics (filled by rotation)
+    "cosmetics": {},
     "canary_base_dir": str(Path.home() / ".mirage" / "decoys"),
     "alert_cooldown_seconds": 300,
 }
@@ -42,6 +51,7 @@ def ensure_data_dir() -> Path:
     (data_dir / "logs").mkdir(exist_ok=True)
     (data_dir / "reports").mkdir(exist_ok=True)
     (data_dir / "decoys").mkdir(exist_ok=True)
+    (data_dir / "evidence").mkdir(exist_ok=True)
     return data_dir
 
 
