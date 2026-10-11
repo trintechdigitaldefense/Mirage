@@ -1,9 +1,10 @@
 # Mirage — Active Deception Platform
 
-**TrinTech Digital Defense** · Trinidad & Tobago 🇹🇹
+**TrinTech Digital Defense** · Trinidad & Tobago 🇹🇹  
+**v2.1 — "The Trap That Talks"**
 
 Lightweight deception layer for networks that have no security team.  
-Fake services, honey tokens, and canary files turn attacker interaction into clear, actionable alerts.
+Fake services, honey tokens, and canary files turn attacker interaction into clear, owner-readable stories.
 
 Designed for Caribbean SMBs. Self-hosted or run as a managed service by TrinTech.  
 Pairs with **Sentinel** (continuous monitoring) and **FortifyOne** (professional audit).
@@ -12,9 +13,20 @@ Pairs with **Sentinel** (continuous monitoring) and **FortifyOne** (professional
 
 ## What Clients Actually Receive
 
-> “An attacker from 203.0.113.45 tried to log in to the fake admin account on the decoy SSH service at 14:22 UTC.”
+> “At 14:22 UTC, source 203.0.113.45 interacted with the fake SSH service. Someone was probing for remote access credentials, not just scanning.”
 
-That is the kind of report business owners understand and act on.
+That is the kind of report business owners understand, forward, and renew for.
+
+---
+
+## What’s New in v2.1
+
+| Feature | What it does |
+|---------|--------------|
+| **Story Report** (`--story`) | One-page narrative: what was touched, what it means, what to do next |
+| **Attack-Intent Engine** | Classifies events into plain-English verdicts + ATT&CK tags |
+| **Decoy Document Factory** | Client- and sector-aware bait (clinic / retail / legal / general) |
+| **Sector-aware init** | `mirage init --sector clinic` produces realistic medical/finance decoys |
 
 ---
 
@@ -22,13 +34,14 @@ That is the kind of report business owners understand and act on.
 
 | Component | Function |
 |-----------|----------|
-| **Fake Services** | Realistic SSH, HTTP, HTTPS, MySQL, RDP, FTP, SMB banners with interaction logging |
-| **Honey Tokens** | Decoy credentials and tokens that alert the moment they are used |
-| **Canary Files** | Attractive decoy files (credentials, VPN configs, financials, API keys) |
-| **Real-time Alerts** | Console + JSON + optional webhook (WhatsApp / Telegram / email) |
-| **Client Reports** | Clean summaries focused on who touched what and when |
+| **Fake Services** | Realistic SSH, HTTP, HTTPS, MySQL, RDP, FTP banners with interaction logging |
+| **Honey Tokens** | Decoy credentials and tokens that alert the moment they are touched |
+| **Canary Files** | Attractive, client-tailored decoy documents |
+| **Intent Classification** | Turns raw events into “what the attacker was trying to do” |
+| **Story Reports** | Owner-readable narratives instead of log dumps |
+| **Real-time Alerts** | Console + optional webhook |
 | **Authorization** | Required ROE reference + action logging |
-| **Lightweight** | Python, modest hardware, Raspberry Pi / small VPS friendly |
+| **Lightweight** | Pure Python, modest hardware, Pi / small VPS friendly |
 
 ---
 
@@ -40,26 +53,26 @@ cd Mirage
 pip install -r requirements.txt
 pip install -e .
 
-mirage init --org "Client Name" --auth-ref ROE-2026-001
+mirage init --org "Acme Medical" --auth-ref ROE-2026-001 --sector clinic
 mirage deploy
 mirage status
 mirage alerts
-mirage report --client
-mirage stop
+mirage report --story          # Feature 01 — the renewal document
+mirage bait --sector clinic    # preview tailored decoys
 ```
 
 ---
 
 ## Typical Engagement Flow
 
-1. Sign Rules of Engagement with the client
-2. `mirage init --org "..." --auth-ref "..."`
-3. `mirage deploy`
-4. Leave running (or manage via systemd)
-5. Attacker interaction → real-time alert
-6. Deliver clean client report
+1. Sign Rules of Engagement with the client  
+2. `mirage init --org "..." --auth-ref "..." --sector ...`  
+3. `mirage deploy`  
+4. Leave running (or manage via systemd)  
+5. Attacker interaction → real-time alert + intent classification  
+6. Deliver the **story report** — the document that converts sceptics and drives renewals  
 
-This converts a one-time audit into ongoing active defense and recurring value.
+This converts a one-time audit into ongoing active defense and recurring revenue.
 
 ---
 
@@ -72,6 +85,18 @@ This converts a one-time audit into ongoing active defense and recurring value.
 | **Mirage** | Active deception (this tool) |
 
 Together these form a practical security offering for Trinidad & Tobago and Caribbean SMBs.
+
+---
+
+## Roadmap (v2.1 and beyond)
+
+Shipped in this release (Revenue tier):  
+- Story report  
+- Decoy document factory  
+- Attack-intent narrative engine  
+
+Next (Depth + Safety):  
+Breadcrumb trails · SSH credential jail · Beaconing tokens · Decoy SMB shares · Coverage heatmap · Legal-grade evidence bundles · Realism rotation · Anti-abuse guardrails  
 
 ---
 
