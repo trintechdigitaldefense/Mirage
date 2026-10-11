@@ -9,14 +9,13 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 
-# Simple rule table: (event_type substring, service/port hints) -> intent
 INTENT_RULES: List[Dict[str, Any]] = [
     {
         "match": ["decoy_ssh_connect", "decoy_ssh_data"],
         "intent": "credential_access",
         "verdict": "Someone was probing for remote access credentials, not just scanning.",
         "confidence": 0.85,
-        "attack": ["T1110", "T1021.004"],  # Brute Force, Remote Services: SSH
+        "attack": ["T1110", "T1021.004"],
         "severity": "high",
     },
     {
@@ -52,6 +51,30 @@ INTENT_RULES: List[Dict[str, Any]] = [
         "severity": "medium",
     },
     {
+        "match": ["decoy_smb_connect", "decoy_smb_negotiate"],
+        "intent": "share_recon",
+        "verdict": "Decoy file share was probed. Looking for Finance/HR/Backups data or credentials on mapped drives.",
+        "confidence": 0.85,
+        "attack": ["T1021.002", "T1135"],
+        "severity": "high",
+    },
+    {
+        "match": ["beacon_hit"],
+        "intent": "credential_exfil_test",
+        "verdict": "A planted honey token was used or fetched from outside the expected path — data may have left the network.",
+        "confidence": 0.95,
+        "attack": ["T1552", "T1078"],
+        "severity": "critical",
+    },
+    {
+        "match": ["trail_hop"],
+        "intent": "lateral_follow",
+        "verdict": "Attacker followed a breadcrumb trail between decoys — they are actively mapping the environment, not just scanning.",
+        "confidence": 0.90,
+        "attack": ["T1083", "T1021"],
+        "severity": "critical",
+    },
+    {
         "match": ["canary_modified", "canary_deleted"],
         "intent": "file_theft_or_tamper",
         "verdict": "A planted decoy document was opened, changed or deleted. Strong signal of hands-on activity.",
@@ -71,10 +94,6 @@ INTENT_RULES: List[Dict[str, Any]] = [
 
 
 def classify_event(event: Dict[str, Any]) -> Dict[str, Any]:
-    """Return intent classification for a single event dict.
-
-    Expected keys: event_type, source_ip, details (dict or JSON string)
-    """
     et = (event.get("event_type") or "").lower()
     details = event.get("details") or {}
     if isinstance(details, str):
@@ -99,7 +118,6 @@ def classify_event(event: Dict[str, Any]) -> Dict[str, Any]:
                     "raw_event_type": event.get("event_type"),
                 }
 
-    # Fallback
     return {
         "intent": "unknown_interaction",
         "verdict": "Unclassified interaction with a deception asset. Still high-signal — legitimate users do not touch decoys.",
@@ -111,7 +129,6 @@ def classify_event(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def classify_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Attach classification to each event and return enriched list."""
     enriched = []
     for e in events:
         c = classify_event(e)
@@ -122,7 +139,6 @@ def classify_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def summarize_intents(events: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Produce a high-level summary of what the attacker(s) appeared to be doing."""
     if not events:
         return {
             "total_events": 0,
@@ -141,9 +157,7 @@ def summarize_intents(events: List[Dict[str, Any]]) -> Dict[str, Any]:
             highest = e
 
     primary = max(counts, key=counts.get) if counts else None
-    primary_verdict = ""
-    if highest:
-        primary_verdict = highest["classification"]["verdict"]
+    primary_verdict = highest["classification"]["verdict"] if highest else ""
 
     return {
         "total_events": len(events),
