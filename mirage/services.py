@@ -1,15 +1,16 @@
 """Realistic fake network services for Mirage deception platform."""
 
+from __future__ import annotations
+
 import socket
 import threading
 import time
 import random
 import logging
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Any
 
 logger = logging.getLogger("mirage.services")
 
-# Realistic banners / responses
 SSH_BANNER = b"SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.10\r\n"
 
 HTTP_RESPONSE = (
@@ -64,7 +65,6 @@ class FakeService:
         try:
             conn.settimeout(5.0)
             conn.sendall(self.banner)
-            # Light interaction capture for SSH/HTTP
             try:
                 data = conn.recv(1024)
                 if data and self.on_connect:
@@ -134,23 +134,63 @@ class FakeService:
 
 
 class ServiceManager:
-    def __init__(self, ports: Dict[str, int], listen_addr: str = "0.0.0.0",
-                 on_connect: Optional[Callable] = None):
+    def __init__(
+        self,
+        ports: Dict[str, int],
+        listen_addr: str = "0.0.0.0",
+        on_connect: Optional[Callable] = None,
+        ssh_jail: bool = True,
+        ssh_jail_timeout: int = 300,
+    ):
         self.ports = ports
         self.listen_addr = listen_addr
         self.on_connect = on_connect
-        self.services: List[FakeService] = []
+        self.ssh_jail = ssh_jail
+        self.ssh_jail_timeout = ssh_jail_timeout
+        self.services: List[Any] = []
+        self._jail = None
 
     def deploy(self):
         mapping = {
-            "ssh": ("ssh", SSH_BANNER),
             "http": ("http", HTTP_RESPONSE),
             "https": ("https", HTTP_RESPONSE),
             "mysql": ("mysql", MYSQL_GREETING),
             "ftp": ("ftp", FTP_BANNER),
             "rdp": ("rdp", RDP_BANNER),
         }
+
+        # SSH: prefer full jail when enabled
+        if "ssh" in self.ports:
+            port = self.ports["ssh"]
+            if self.ssh_jail:
+                try:
+                    from .ssh_jail import SSHJail, PARAMIKO_AVAILABLE
+                    if PARAMIKO_AVAILABLE:
+                        jail = SSHJail(
+                            port=port,
+                            listen_addr=self.listen_addr,
+                            on_event=self.on_connect,
+                            session_timeout=self.ssh_jail_timeout,
+                        )
+                        if jail.start():
+                            self._jail = jail
+                            self.services.append(jail)
+                            logger.info("SSH jail active on port %d", port)
+                        else:
+                            logger.warning("SSH jail failed to bind — falling back to banner decoy")
+                            self._start_banner_ssh(port)
+                    else:
+                        logger.warning("paramiko missing — SSH jail disabled, using banner decoy")
+                        self._start_banner_ssh(port)
+                except Exception as e:
+                    logger.error("SSH jail error: %s — using banner decoy", e)
+                    self._start_banner_ssh(port)
+            else:
+                self._start_banner_ssh(port)
+
         for key, port in self.ports.items():
+            if key == "ssh":
+                continue
             if key in mapping:
                 name, banner = mapping[key]
                 svc = FakeService(name, port, banner, self.listen_addr, self.on_connect)
@@ -158,10 +198,34 @@ class ServiceManager:
                 if svc._running:
                     self.services.append(svc)
 
+    def _start_banner_ssh(self, port: int):
+        svc = FakeService("ssh", port, SSH_BANNER, self.listen_addr, self.on_connect)
+        svc.start()
+        if svc._running:
+            self.services.append(svc)
+
     def stop_all(self):
         for svc in self.services:
-            svc.stop()
+            try:
+                svc.stop()
+            except Exception:
+                pass
         self.services.clear()
+        self._jail = None
 
     def status(self) -> List[Dict]:
-        return [{"name": s.name, "port": s.port, "running": s._running} for s in self.services]
+        out = []
+        for s in self.services:
+            if hasattr(s, "status") and callable(s.status):
+                st = s.status()
+                if isinstance(st, dict):
+                    out.append(st)
+                else:
+                    out.append({"name": getattr(s, "name", "?"), "port": getattr(s, "port", 0), "running": True})
+            else:
+                out.append({
+                    "name": getattr(s, "name", "?"),
+                    "port": getattr(s, "port", 0),
+                    "running": getattr(s, "_running", True),
+                })
+        return out
