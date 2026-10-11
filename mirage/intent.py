@@ -10,6 +10,39 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 INTENT_RULES: List[Dict[str, Any]] = [
+    # SSH jail — highest value signals first
+    {
+        "match": ["ssh_jail_command"],
+        "intent": "interactive_compromise",
+        "verdict": "Attacker authenticated to the decoy SSH and typed commands — full interactive session captured.",
+        "confidence": 0.98,
+        "attack": ["T1059", "T1021.004"],
+        "severity": "critical",
+    },
+    {
+        "match": ["ssh_jail_login"],
+        "intent": "credential_access",
+        "verdict": "Someone submitted credentials to the decoy SSH service and was dropped into the jail.",
+        "confidence": 0.95,
+        "attack": ["T1110", "T1078", "T1021.004"],
+        "severity": "critical",
+    },
+    {
+        "match": ["ssh_jail_session_end"],
+        "intent": "interactive_compromise",
+        "verdict": "Decoy SSH session closed. Review the command transcript for tools, targets and intent.",
+        "confidence": 0.90,
+        "attack": ["T1059", "T1021.004"],
+        "severity": "high",
+    },
+    {
+        "match": ["ssh_jail_connect", "ssh_jail"],
+        "intent": "credential_access",
+        "verdict": "Connection to the credential-harvesting SSH jail — attacker is probing interactive remote access.",
+        "confidence": 0.88,
+        "attack": ["T1021.004"],
+        "severity": "high",
+    },
     {
         "match": ["decoy_ssh_connect", "decoy_ssh_data"],
         "intent": "credential_access",
