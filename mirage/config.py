@@ -18,14 +18,17 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "ftp": 2121,
         "rdp": 3389,
     },
-    # Feature 08 — decoy SMB (non-privileged port by default)
+    # Feature 06 — credential-harvesting SSH jail
+    "ssh_jail_enabled": True,
+    "ssh_jail_timeout": 300,  # 5 minutes hard cap
+    # Feature 08 — decoy SMB
     "smb_enabled": True,
     "smb_port": 4450,
     "smb_shares": ["Finance", "HR", "Backups"],
     # Feature 07 — beaconing tokens
     "beacon_enabled": True,
     "beacon_port": 8888,
-    "beacon_base_url": "",  # e.g. https://beacon.trintech.example or http://<host>:8888
+    "beacon_base_url": "",
     "canary_base_dir": str(Path.home() / ".mirage" / "decoys"),
     "alert_cooldown_seconds": 300,
 }
