@@ -1,8 +1,11 @@
 """Canary / decoy files and honey tokens.
 
 Feature 02 — Decoy document factory
-Feature 05 — Breadcrumb trails (cross-linked decoys)
-Feature 07 — Beaconing honey tokens embedded in secrets files
+Feature 05 — Breadcrumb trails
+Feature 07 — Beaconing honey tokens
+Feature 13 — Industry packs
+Feature 14 — AD decoy accounts
+Feature 16 — Email-borne canaries
 """
 
 from __future__ import annotations
@@ -16,6 +19,9 @@ from typing import Callable, List, Dict, Optional, Any
 
 from .beacons import generate_tokens, tokens_to_env_file
 from .trails import build_trail_documents, save_trail_meta, load_trail_meta, resolve_hop
+from .packs import pack_extra_docs
+from .email_canary import generate_email_canaries, render_invoice_canary, render_html_canary
+from .ad_decoy import render_accounts_file
 
 logger = logging.getLogger("mirage.canaries")
 
@@ -26,7 +32,6 @@ def _build_default_baits(
     beacon_base: str = "",
     include_trails: bool = True,
 ) -> List[Dict[str, str]]:
-    """Produce client-aware decoy documents with optional trails and beacons."""
     org = org or "Company"
     sector = (sector or "general").lower()
 
@@ -37,7 +42,6 @@ def _build_default_baits(
             f"Q2 Patient Billing Summary\n"
             f"Total billed: TT$ 1.85M\n"
             f"Outstanding AR: TT$ 312k\n"
-            f"Primary insurer codes on file — internal use only\n"
             f"# Decoy canary — interaction triggers alert\n"
         )
         extra = {
@@ -45,8 +49,7 @@ def _build_default_baits(
             "relpath": "records/patient_index_snippet.txt",
             "content": (
                 f"{org} — Restricted Patient Index (sample)\n"
-                f"Do not distribute. For authorized clinical staff only.\n"
-                f"Last export: 2026-09-14\n"
+                f"For authorized clinical staff only.\n"
                 f"# DECOY FILE\n"
             ),
         }
@@ -54,9 +57,7 @@ def _build_default_baits(
         finance_name = "Supplier_Invoices_Pending.txt"
         finance_body = (
             f"{org} — Accounts Payable\n"
-            f"Pending supplier invoices — do not share externally\n"
             f"PO-88421  TT$ 48,200  due 2026-10-15\n"
-            f"PO-88455  TT$ 12,750  due 2026-10-22\n"
             f"# Decoy canary\n"
         )
         extra = {
@@ -73,45 +74,35 @@ def _build_default_baits(
         finance_name = "Matter_Trust_Summary.txt"
         finance_body = (
             f"{org} — Trust Account Summary (CONFIDENTIAL)\n"
-            f"Matter balances as of last reconciliation\n"
             f"Client funds held — internal only\n"
             f"# Decoy canary\n"
         )
         extra = {
             "name": "matter_index",
             "relpath": "matters/active_matters_index.txt",
-            "content": (
-                f"{org} Active Matters Index — Privileged\n"
-                f"For authorized fee earners only.\n"
-                f"# DECOY\n"
-            ),
+            "content": f"{org} Active Matters Index — Privileged\n# DECOY\n",
         }
     else:
         finance_name = "Q2_Board_Report.txt"
         finance_body = (
             f"CONFIDENTIAL — {org} Board Eyes Only\n"
             f"Q2 Revenue: TT$ 4.2M\n"
-            f"Projected Q3: TT$ 5.1M\n"
-            f"Bank Account ending 4821 — primary operating\n"
             f"# This is a decoy canary file\n"
         )
         extra = None
 
-    # Beaconing tokens (Feature 07)
     tokens = generate_tokens(org=org, count=2, beacon_base=beacon_base)
     secrets_content = tokens_to_env_file(tokens, org=org)
+    email_cans = generate_email_canaries(org=org, beacon_base=beacon_base, count=1)
 
-    baits = [
+    baits: List[Dict[str, Any]] = [
         {
             "name": "db_credentials",
             "relpath": "config/db_credentials.txt",
             "content": (
                 f"# {org} — Production Database Credentials — CONFIDENTIAL\n"
-                f"DB_HOST=10.0.0.15\n"
-                f"DB_USER=admin\n"
-                f"DB_PASS=Pr0d_S3cure_2026!\n"
+                f"DB_HOST=10.0.0.15\nDB_USER=admin\nDB_PASS=Pr0d_S3cure_2026!\n"
                 f"DB_NAME={org.lower().replace(' ', '_')}_erp\n"
-                f"# Last rotated: 2026-08-12\n"
                 f"# DECOY — any use or modification alerts\n"
             ),
         },
@@ -119,13 +110,9 @@ def _build_default_baits(
             "name": "vpn_config",
             "relpath": "config/company-vpn.ovpn",
             "content": (
-                f"# {org} corporate VPN profile\n"
-                f"client\n"
-                f"dev tun\n"
-                f"proto udp\n"
+                f"# {org} corporate VPN profile\nclient\ndev tun\nproto udp\n"
                 f"remote vpn.internal.{org.lower().replace(' ', '')}.tt 1194\n"
-                f"auth-user-pass\n"
-                f"# DECOY — do not use. Interaction triggers alert.\n"
+                f"auth-user-pass\n# DECOY\n"
             ),
         },
         {
@@ -144,32 +131,38 @@ def _build_default_baits(
             "relpath": "admin/passwords.txt",
             "content": (
                 f"# {org} privileged accounts — DO NOT DISTRIBUTE\n"
-                f"admin:Tr1nTech_Admin_2026!\n"
-                f"root:ChangeMeImmediately!\n"
-                f"backup:B@ckup_S3cret\n"
-                f"# Decoy credentials — use triggers alert\n"
-                f"# See also: shares/README_Finance.txt for drive mappings\n"
+                f"admin:Tr1nTech_Admin_2026!\nroot:ChangeMeImmediately!\nbackup:B@ckup_S3cret\n"
+                f"# See shares/README_Finance.txt for drive mappings\n"
             ),
         },
         {
-            "name": "passwords_xlsx_note",
-            "relpath": "admin/passwords_README.txt",
-            "content": (
-                f"{org} — Shared credential workbook location\n"
-                f"See passwords.xlsx on the Finance share (network drive).\n"
-                f"Last updated by IT — 2026-09-01\n"
-                f"# Decoy pointer file\n"
-            ),
+            "name": "ad_decoy_accounts",
+            "relpath": "admin/domain_accounts_export.txt",
+            "content": render_accounts_file(org),
+        },
+        {
+            "name": "email_invoice_canary",
+            "relpath": "finance/INV-DECOY-8841.txt",
+            "content": render_invoice_canary(org, email_cans),
+            "beacon_token_ids": [c["id"] for c in email_cans],
+        },
+        {
+            "name": "email_invoice_html",
+            "relpath": "finance/INV-DECOY-8841.html",
+            "content": render_html_canary(org, email_cans),
+            "beacon_token_ids": [c["id"] for c in email_cans],
         },
     ]
 
     if extra:
         baits.append(extra)
 
-    # Breadcrumb trails (Feature 05)
+    # Industry pack extras (Feature 13)
+    for doc in pack_extra_docs(sector, org=org):
+        baits.append(doc)
+
     if include_trails:
         trail_docs, _meta = build_trail_documents(org=org)
-        # Avoid overwriting admin/passwords if trail endpoint uses same path
         for td in trail_docs:
             if td["relpath"] == "admin/passwords.txt":
                 continue
@@ -216,7 +209,6 @@ class CanaryManager:
         defs = canary_defs or self.generate_baits()
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-        # Materialise trail meta
         trail_docs, trail_meta = build_trail_documents(org=self.organization)
         save_trail_meta(self.base_dir, trail_meta)
         self._trail_meta = trail_meta
@@ -245,18 +237,13 @@ class CanaryManager:
             "canary": canary["name"],
             "path": canary["path"],
         }
-        # Attach trail hop context when available
         hop = resolve_hop(self._trail_meta or load_trail_meta(self.base_dir), canary["path"])
         if hop:
             details["trail"] = hop
             event_type = "trail_hop" if "node" in hop or "hop_from" in hop else event_type
 
         if self.on_alert:
-            self.on_alert(
-                event_type=event_type,
-                source_ip="local",
-                details=details,
-            )
+            self.on_alert(event_type=event_type, source_ip="local", details=details)
 
     def _start_watcher(self):
         if self._running:
