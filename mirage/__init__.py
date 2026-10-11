@@ -1,4 +1,7 @@
-"""Mirage — Active Deception Platform by TrinTech Digital Defense"""
+"""Mirage — Active Deception Platform by TrinTech Digital Defense
 
-__version__ = "2.0.0"
+v2.1 "The Trap That Talks"
+"""
+
+__version__ = "2.1.0"
 __author__ = "TrinTech Digital Defense"
