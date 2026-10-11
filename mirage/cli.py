@@ -18,6 +18,8 @@ from .config import load_config, save_config, ensure_data_dir
 from .db import init_db, log_auth, get_all_events
 from .services import ServiceManager
 from .canaries import CanaryManager
+from .smb import SMBManager
+from .beacons import BeaconListener
 from .alerts import emit
 from .report import generate_report
 from .intent import classify_event
@@ -25,9 +27,10 @@ from .intent import classify_event
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger("mirage")
 
-# Global managers for stop handling
 _service_mgr = None
 _canary_mgr = None
+_smb_mgr = None
+_beacon_listener = None
 
 
 def _on_event(event_type: str, source_ip: str = "", details: dict = None):
@@ -44,6 +47,8 @@ def cmd_init(args):
         cfg["authorization_ref"] = args.auth_ref
     if getattr(args, "sector", None):
         cfg["sector"] = args.sector
+    if getattr(args, "beacon_url", None):
+        cfg["beacon_base_url"] = args.beacon_url
     save_config(cfg)
     log_auth("init", cfg.get("authorization_ref", ""), "Mirage initialized")
     print(f"[+] Mirage {__version__} initialized")
@@ -51,11 +56,12 @@ def cmd_init(args):
     print(f"    Organization : {cfg.get('organization_name') or '(not set)'}")
     print(f"    Sector       : {cfg.get('sector') or 'general'}")
     print(f"    Auth ref     : {cfg.get('authorization_ref') or '(not set)'}")
+    print(f"    Beacon URL   : {cfg.get('beacon_base_url') or '(local listener)'}")
     print("    Next: mirage deploy")
 
 
 def cmd_deploy(args):
-    global _service_mgr, _canary_mgr
+    global _service_mgr, _canary_mgr, _smb_mgr, _beacon_listener
     cfg = load_config()
     auth_ref = cfg.get("authorization_ref", "")
     if not auth_ref and not args.force:
@@ -65,6 +71,12 @@ def cmd_deploy(args):
 
     org = cfg.get("organization_name") or "Company"
     sector = cfg.get("sector") or "general"
+    beacon_base = cfg.get("beacon_base_url") or ""
+    if not beacon_base and cfg.get("beacon_enabled", True):
+        # Default local beacon endpoint so tokens have a real callback
+        host = cfg.get("listen_address", "0.0.0.0")
+        # Prefer a reachable hint for token embedding
+        beacon_base = f"http://127.0.0.1:{cfg.get('beacon_port', 8888)}"
 
     print(f"[*] Deploying Mirage {__version__} — The Trap That Talks")
     print(f"    Organization : {org}")
@@ -72,8 +84,12 @@ def cmd_deploy(args):
     print(f"    Auth ref     : {auth_ref or 'NONE (forced)'}")
     print()
 
-    # Services
-    print("[1/2] Starting fake services...")
+    step = 1
+    total = 2 + (1 if cfg.get("smb_enabled", True) else 0) + (1 if cfg.get("beacon_enabled", True) else 0)
+
+    # 1. Fake services
+    print(f"[{step}/{total}] Starting fake services...")
+    step += 1
     _service_mgr = ServiceManager(
         ports=cfg.get("ports", {}),
         listen_addr=cfg.get("listen_address", "0.0.0.0"),
@@ -83,21 +99,52 @@ def cmd_deploy(args):
     for s in _service_mgr.status():
         print(f"       {s['name']:8} on port {s['port']}")
 
-    # Canaries — Feature 02 bait factory
-    print("[2/2] Deploying tailored canary files + honey tokens...")
+    # 2. Canaries + trails + beacon tokens
+    print(f"[{step}/{total}] Deploying canaries, breadcrumb trails & honey tokens...")
+    step += 1
     _canary_mgr = CanaryManager(
         base_dir=cfg.get("canary_base_dir"),
         on_alert=_on_event,
         organization=org,
         sector=sector,
+        beacon_base=beacon_base,
     )
     _canary_mgr.deploy()
     for c in _canary_mgr.status():
-        print(f"       {c['name']:22} → {c['path']}")
+        trail = f" [trail:{c['trail_node']}]" if c.get("trail_node") else ""
+        print(f"       {c['name']:22} → {c['path']}{trail}")
 
-    log_auth("deploy", auth_ref, f"services + canaries deployed (sector={sector})")
+    # 3. SMB decoys
+    if cfg.get("smb_enabled", True):
+        print(f"[{step}/{total}] Starting decoy SMB shares...")
+        step += 1
+        _smb_mgr = SMBManager(
+            port=int(cfg.get("smb_port", 4450)),
+            listen_addr=cfg.get("listen_address", "0.0.0.0"),
+            share_names=cfg.get("smb_shares") or ["Finance", "HR", "Backups"],
+            on_connect=_on_event,
+        )
+        _smb_mgr.deploy()
+        for s in _smb_mgr.status():
+            print(f"       smb      on port {s['port']} shares={s['shares']}")
+
+    # 4. Beacon listener
+    if cfg.get("beacon_enabled", True):
+        print(f"[{step}/{total}] Starting beacon listener...")
+        known = set(_canary_mgr.beacon_token_ids) if _canary_mgr else set()
+        _beacon_listener = BeaconListener(
+            host=cfg.get("listen_address", "0.0.0.0"),
+            port=int(cfg.get("beacon_port", 8888)),
+            on_beacon=_on_event,
+            known_ids=known,
+        )
+        _beacon_listener.start()
+        st = _beacon_listener.status()
+        print(f"       beacon   on port {st['port']} (known tokens: {st['known_tokens']})")
+
+    log_auth("deploy", auth_ref, f"full depth deploy (sector={sector})")
     print()
-    print("[+] Mirage is live. Any interaction with decoys will generate alerts.")
+    print("[+] Mirage is live. Decoys, trails, shares and beacons are armed.")
     print("    Commands: mirage status | mirage alerts | mirage report --story")
     print("    Stop with Ctrl+C or: mirage stop")
     print()
@@ -108,6 +155,10 @@ def cmd_deploy(args):
             _service_mgr.stop_all()
         if _canary_mgr:
             _canary_mgr.stop()
+        if _smb_mgr:
+            _smb_mgr.stop()
+        if _beacon_listener:
+            _beacon_listener.stop()
         log_auth("stop", auth_ref, "manual stop")
         sys.exit(0)
 
@@ -130,8 +181,11 @@ def cmd_status(_args):
     print(f"Sector         : {cfg.get('sector') or 'general'}")
     print(f"Auth ref       : {cfg.get('authorization_ref') or '(not set)'}")
     print(f"Data dir       : {cfg['data_dir']}")
+    print(f"SMB enabled    : {cfg.get('smb_enabled', True)} (port {cfg.get('smb_port', 4450)})")
+    print(f"Beacon enabled : {cfg.get('beacon_enabled', True)} (port {cfg.get('beacon_port', 8888)})")
+    print(f"Beacon URL     : {cfg.get('beacon_base_url') or '(local)'}")
     print(f"Webhook        : {'configured' if cfg.get('webhook_url') else 'none'}")
-    print("Note: Live service/canary status is available while 'mirage deploy' is running.")
+    print("Note: Live service status is available while 'mirage deploy' is running.")
 
 
 def cmd_alerts(args):
@@ -158,14 +212,15 @@ def cmd_report(args):
 
 
 def cmd_bait(args):
-    """Preview or generate tailored decoy documents without deploying services."""
     cfg = load_config()
     org = args.org or cfg.get("organization_name") or "Company"
     sector = args.sector or cfg.get("sector") or "general"
+    beacon_base = cfg.get("beacon_base_url") or f"http://127.0.0.1:{cfg.get('beacon_port', 8888)}"
     mgr = CanaryManager(
         base_dir=cfg.get("canary_base_dir"),
         organization=org,
         sector=sector,
+        beacon_base=beacon_base,
     )
     baits = mgr.generate_baits(org=org, sector=sector)
     print(f"=== Decoy Document Factory — {org} ({sector}) ===")
@@ -177,7 +232,7 @@ def cmd_bait(args):
     print()
     if args.write:
         mgr.deploy(baits)
-        print("[+] Bait files written to disk and watcher started (if not already running).")
+        print("[+] Bait + trail files written to disk.")
     else:
         print("Pass --write to actually create the files on disk.")
 
@@ -193,7 +248,7 @@ def cmd_clean(args):
     if base.exists():
         import shutil
         shutil.rmtree(base, ignore_errors=True)
-        print("[+] Canary files removed")
+        print("[+] Canary / trail files removed")
     else:
         print("[*] No canary directory found")
     log_auth("clean", cfg.get("authorization_ref", ""), "canaries cleaned")
@@ -210,10 +265,11 @@ def main():
     p = sub.add_parser("init", help="Initialize config and database")
     p.add_argument("--org", help="Organization / client name")
     p.add_argument("--auth-ref", help="Authorization / ROE reference")
-    p.add_argument("--sector", help="Industry sector for tailored bait (general|clinic|retail|legal)")
+    p.add_argument("--sector", help="Industry sector (general|clinic|retail|legal)")
+    p.add_argument("--beacon-url", help="Public beacon base URL for honey tokens")
     p.set_defaults(func=cmd_init)
 
-    p = sub.add_parser("deploy", help="Deploy fake services + canaries")
+    p = sub.add_parser("deploy", help="Deploy services, canaries, trails, SMB, beacons")
     p.add_argument("--force", action="store_true", help="Deploy without auth-ref")
     p.set_defaults(func=cmd_deploy)
 
@@ -228,10 +284,10 @@ def main():
     p.add_argument("--daily", action="store_true")
     p.add_argument("--hours", type=int)
     p.add_argument("--client", action="store_true", help="Client-facing format (alias for --story)")
-    p.add_argument("--story", action="store_true", help="Feature 01: 'We Caught Them' narrative report")
+    p.add_argument("--story", action="store_true", help="'We Caught Them' narrative report")
     p.set_defaults(func=cmd_report)
 
-    p = sub.add_parser("bait", help="Preview / generate tailored decoy documents (Feature 02)")
+    p = sub.add_parser("bait", help="Preview / generate tailored decoy documents")
     p.add_argument("--org", help="Override organization name")
     p.add_argument("--sector", help="Override sector")
     p.add_argument("--write", action="store_true", help="Actually write the files")
