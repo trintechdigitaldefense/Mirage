@@ -11,29 +11,44 @@ from typing import Callable, Dict, List, Optional, Any
 
 logger = logging.getLogger("mirage.services")
 
+# Defaults — overridden at deploy by rotation cosmetics when available
 SSH_BANNER = b"SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.10\r\n"
-
-HTTP_RESPONSE = (
-    b"HTTP/1.1 200 OK\r\n"
-    b"Server: Apache/2.4.52 (Ubuntu)\r\n"
-    b"Content-Type: text/html\r\n"
-    b"Connection: close\r\n\r\n"
-    b"<!DOCTYPE html><html><head><title>Admin Portal</title></head>"
-    b"<body><h1>Internal Admin Portal</h1>"
-    b"<p>Authorized personnel only. Login required.</p>"
-    b"<form><input name='user' placeholder='Username'>"
-    b"<input name='pass' type='password' placeholder='Password'>"
-    b"<button>Login</button></form></body></html>"
-)
+HTTP_SERVER = "Apache/2.4.52 (Ubuntu)"
+FTP_BANNER = b"220 Welcome to FTP Server (vsFTPd 3.0.5)\r\n"
 
 MYSQL_GREETING = (
     b"\x4a\x00\x00\x00\x0a8.0.36\x00\x0f\x00\x00\x00"
     b"abcdefgh\x00\xff\xf7\x08\x02\x00\xff\x81\x15\x00\x00\x00"
     b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00abcdefghijklmnop\x00"
 )
-
-FTP_BANNER = b"220 Welcome to FTP Server (vsFTPd 3.0.5)\r\n"
 RDP_BANNER = b"\x03\x00\x00\x13\x0e\xd0\x00\x00\x12\x34\x00\x02\x0f\x08\x00\x02\x00\x00\x00"
+
+
+def _http_response(server: str = HTTP_SERVER) -> bytes:
+    return (
+        b"HTTP/1.1 200 OK\r\n"
+        + f"Server: {server}\r\n".encode()
+        + b"Content-Type: text/html\r\n"
+        + b"Connection: close\r\n\r\n"
+        + b"<!DOCTYPE html><html><head><title>Admin Portal</title></head>"
+        + b"<body><h1>Internal Admin Portal</h1>"
+        + b"<p>Authorized personnel only. Login required.</p>"
+        + b"<form><input name='user' placeholder='Username'>"
+        + b"<input name='pass' type='password' placeholder='Password'>"
+        + b"<button>Login</button></form></body></html>"
+    )
+
+
+def _load_cosmetics():
+    """Pull rotated banners if rotation module is available."""
+    global SSH_BANNER, HTTP_SERVER, FTP_BANNER
+    try:
+        from .rotation import get_ssh_banner, get_http_server, get_ftp_banner
+        SSH_BANNER = get_ssh_banner()
+        HTTP_SERVER = get_http_server()
+        FTP_BANNER = get_ftp_banner()
+    except Exception:
+        pass
 
 
 class FakeService:
@@ -151,15 +166,15 @@ class ServiceManager:
         self._jail = None
 
     def deploy(self):
+        _load_cosmetics()
         mapping = {
-            "http": ("http", HTTP_RESPONSE),
-            "https": ("https", HTTP_RESPONSE),
+            "http": ("http", _http_response(HTTP_SERVER)),
+            "https": ("https", _http_response(HTTP_SERVER)),
             "mysql": ("mysql", MYSQL_GREETING),
             "ftp": ("ftp", FTP_BANNER),
             "rdp": ("rdp", RDP_BANNER),
         }
 
-        # SSH: prefer full jail when enabled
         if "ssh" in self.ports:
             port = self.ports["ssh"]
             if self.ssh_jail:
