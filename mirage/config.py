@@ -19,24 +19,22 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "ftp": 2121,
         "rdp": 3389,
     },
-    # Feature 06 — SSH jail
     "ssh_jail_enabled": True,
     "ssh_jail_timeout": 300,
-    # Feature 08 — SMB
     "smb_enabled": True,
     "smb_port": 4450,
     "smb_shares": ["Finance", "HR", "Backups"],
-    # Feature 07 — beacons
     "beacon_enabled": True,
     "beacon_port": 8888,
     "beacon_base_url": "",
-    # Feature 12 — guardrails
+    # Feature 15 — cloud decoy bucket
+    "cloud_decoy_enabled": True,
+    "cloud_decoy_port": 9000,
     "guardrails_enabled": True,
     "rate_limit_per_source": 30,
     "rate_limit_window_sec": 60,
     "circuit_breaker_threshold": 500,
     "circuit_breaker_window_sec": 60,
-    # Feature 11 — cosmetics (filled by rotation)
     "cosmetics": {},
     "canary_base_dir": str(Path.home() / ".mirage" / "decoys"),
     "alert_cooldown_seconds": 300,
