@@ -1,16 +1,11 @@
-"""Attack-intent narrative engine for Mirage.
-
-Classifies deception events into plain-English intent verdicts with
-confidence and ATT&CK technique tags. Clients pay for judgement, not logs.
-"""
+"""Attack-intent narrative engine for Mirage."""
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 
 INTENT_RULES: List[Dict[str, Any]] = [
-    # SSH jail — highest value signals first
     {
         "match": ["ssh_jail_command"],
         "intent": "interactive_compromise",
@@ -42,6 +37,14 @@ INTENT_RULES: List[Dict[str, Any]] = [
         "confidence": 0.88,
         "attack": ["T1021.004"],
         "severity": "high",
+    },
+    {
+        "match": ["cloud_decoy_access", "cloud_decoy"],
+        "intent": "cloud_data_hunt",
+        "verdict": "Someone listed or fetched from the decoy cloud bucket — hunting backups or exported data.",
+        "confidence": 0.92,
+        "attack": ["T1530", "T1580"],
+        "severity": "critical",
     },
     {
         "match": ["decoy_ssh_connect", "decoy_ssh_data"],
