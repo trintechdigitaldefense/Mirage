@@ -17,6 +17,7 @@ import requests
 
 from .config import load_config
 from .db import log_event, is_in_cooldown, set_cooldown
+from . import guardrails
 
 logger = logging.getLogger("mirage.alerts")
 
@@ -26,6 +27,22 @@ def emit(event_type: str, source_ip: str = "",
     cfg = load_config()
     auth_ref = cfg.get("authorization_ref", "")
     details = details or {}
+
+    # Feature 12 — guardrails
+    if cfg.get("guardrails_enabled", True):
+        allowed, reason = guardrails.check_source(source_ip or "unknown")
+        if not allowed:
+            logger.warning("Guardrail blocked alert %s from %s: %s", event_type, source_ip, reason)
+            # Still log a suppressed marker for forensics (no webhook spam)
+            if reason.startswith("Circuit") or "circuit" in reason.lower():
+                log_event(
+                    "guardrail_circuit_open",
+                    source_ip,
+                    {"reason": reason, "blocked_event": event_type},
+                    severity="critical",
+                    authorization_ref=auth_ref,
+                )
+            return
 
     # Cooldown key
     key = f"{event_type}:{source_ip}:{details.get('service', details.get('canary', ''))}"
@@ -39,6 +56,13 @@ def emit(event_type: str, source_ip: str = "",
     # Human message
     if "canary" in event_type:
         msg = f"Canary '{details.get('canary')}' was {event_type.split('_')[-1]}"
+    elif event_type.startswith("ssh_jail"):
+        if event_type == "ssh_jail_command":
+            msg = f"SSH jail command from {source_ip}: {details.get('command', '')!r}"
+        elif event_type == "ssh_jail_login":
+            msg = f"SSH jail login as {details.get('username', '?')} from {source_ip}"
+        else:
+            msg = f"SSH jail event ({event_type}) from {source_ip or 'unknown'}"
     else:
         svc = details.get("service", "unknown")
         msg = f"Attacker interaction with fake {svc.upper()} service from {source_ip or 'unknown'}"
@@ -64,7 +88,7 @@ def emit(event_type: str, source_ip: str = "",
         try:
             payload = {
                 "source": "Mirage",
-                "version": "2.0.0",
+                "version": "2.1.0",
                 "event_type": event_type,
                 "source_ip": source_ip,
                 "message": msg,
