@@ -57,6 +57,8 @@ def cmd_init(args):
     print(f"    Sector       : {cfg.get('sector') or 'general'}")
     print(f"    Auth ref     : {cfg.get('authorization_ref') or '(not set)'}")
     print(f"    Beacon URL   : {cfg.get('beacon_base_url') or '(local listener)'}")
+    print(f"    SSH jail     : {'ON' if cfg.get('ssh_jail_enabled', True) else 'OFF'} "
+          f"(timeout {cfg.get('ssh_jail_timeout', 300)}s)")
     print("    Next: mirage deploy")
 
 
@@ -73,31 +75,38 @@ def cmd_deploy(args):
     sector = cfg.get("sector") or "general"
     beacon_base = cfg.get("beacon_base_url") or ""
     if not beacon_base and cfg.get("beacon_enabled", True):
-        # Default local beacon endpoint so tokens have a real callback
-        host = cfg.get("listen_address", "0.0.0.0")
-        # Prefer a reachable hint for token embedding
         beacon_base = f"http://127.0.0.1:{cfg.get('beacon_port', 8888)}"
+
+    jail_on = cfg.get("ssh_jail_enabled", True)
+    jail_timeout = int(cfg.get("ssh_jail_timeout", 300))
 
     print(f"[*] Deploying Mirage {__version__} — The Trap That Talks")
     print(f"    Organization : {org}")
     print(f"    Sector       : {sector}")
     print(f"    Auth ref     : {auth_ref or 'NONE (forced)'}")
+    print(f"    SSH jail     : {'ON' if jail_on else 'OFF'} (cap {jail_timeout}s)")
     print()
 
     step = 1
     total = 2 + (1 if cfg.get("smb_enabled", True) else 0) + (1 if cfg.get("beacon_enabled", True) else 0)
 
-    # 1. Fake services
-    print(f"[{step}/{total}] Starting fake services...")
+    # 1. Fake services (+ SSH jail replaces banner SSH when enabled)
+    print(f"[{step}/{total}] Starting fake services" + (" + SSH jail..." if jail_on else "..."))
     step += 1
     _service_mgr = ServiceManager(
         ports=cfg.get("ports", {}),
         listen_addr=cfg.get("listen_address", "0.0.0.0"),
         on_connect=_on_event,
+        ssh_jail=jail_on,
+        ssh_jail_timeout=jail_timeout,
     )
     _service_mgr.deploy()
     for s in _service_mgr.status():
-        print(f"       {s['name']:8} on port {s['port']}")
+        label = s.get("name", "?")
+        extra = ""
+        if label == "ssh_jail":
+            extra = f"  [JAIL timeout={s.get('session_timeout', jail_timeout)}s]"
+        print(f"       {label:10} on port {s.get('port')}{extra}")
 
     # 2. Canaries + trails + beacon tokens
     print(f"[{step}/{total}] Deploying canaries, breadcrumb trails & honey tokens...")
@@ -126,7 +135,7 @@ def cmd_deploy(args):
         )
         _smb_mgr.deploy()
         for s in _smb_mgr.status():
-            print(f"       smb      on port {s['port']} shares={s['shares']}")
+            print(f"       smb        on port {s['port']} shares={s['shares']}")
 
     # 4. Beacon listener
     if cfg.get("beacon_enabled", True):
@@ -140,13 +149,15 @@ def cmd_deploy(args):
         )
         _beacon_listener.start()
         st = _beacon_listener.status()
-        print(f"       beacon   on port {st['port']} (known tokens: {st['known_tokens']})")
+        print(f"       beacon     on port {st['port']} (known tokens: {st['known_tokens']})")
 
-    log_auth("deploy", auth_ref, f"full depth deploy (sector={sector})")
+    log_auth("deploy", auth_ref, f"full depth deploy incl SSH jail (sector={sector})")
     print()
-    print("[+] Mirage is live. Decoys, trails, shares and beacons are armed.")
+    print("[+] Mirage is live.")
+    if jail_on:
+        print("    SSH jail is armed — any login + commands will be captured.")
     print("    Commands: mirage status | mirage alerts | mirage report --story")
-    print("    Stop with Ctrl+C or: mirage stop")
+    print("    Stop with Ctrl+C")
     print()
 
     def _shutdown(sig, frame):
@@ -181,6 +192,8 @@ def cmd_status(_args):
     print(f"Sector         : {cfg.get('sector') or 'general'}")
     print(f"Auth ref       : {cfg.get('authorization_ref') or '(not set)'}")
     print(f"Data dir       : {cfg['data_dir']}")
+    print(f"SSH jail       : {'ON' if cfg.get('ssh_jail_enabled', True) else 'OFF'} "
+          f"(timeout {cfg.get('ssh_jail_timeout', 300)}s, port {cfg.get('ports', {}).get('ssh', 2222)})")
     print(f"SMB enabled    : {cfg.get('smb_enabled', True)} (port {cfg.get('smb_port', 4450)})")
     print(f"Beacon enabled : {cfg.get('beacon_enabled', True)} (port {cfg.get('beacon_port', 8888)})")
     print(f"Beacon URL     : {cfg.get('beacon_base_url') or '(local)'}")
@@ -197,10 +210,20 @@ def cmd_alerts(args):
     for e in events:
         cls = classify_event(e)
         intent = cls.get("intent", "?")
+        details = e.get("details", "")
+        # Highlight commands from the jail
+        extra = ""
+        if e.get("event_type") == "ssh_jail_command":
+            try:
+                import json
+                d = json.loads(details) if isinstance(details, str) else details
+                extra = f" cmd={d.get('command', '')!r}"
+            except Exception:
+                pass
         print(
             f"  [{e['timestamp']}] {e['event_type']:25} "
             f"src={e.get('source_ip') or 'n/a':15} "
-            f"intent={intent:20} {str(e.get('details', ''))[:50]}"
+            f"intent={intent:22}{extra} {str(details)[:40]}"
         )
 
 
@@ -269,7 +292,7 @@ def main():
     p.add_argument("--beacon-url", help="Public beacon base URL for honey tokens")
     p.set_defaults(func=cmd_init)
 
-    p = sub.add_parser("deploy", help="Deploy services, canaries, trails, SMB, beacons")
+    p = sub.add_parser("deploy", help="Deploy services, SSH jail, canaries, trails, SMB, beacons")
     p.add_argument("--force", action="store_true", help="Deploy without auth-ref")
     p.set_defaults(func=cmd_deploy)
 
