@@ -38,6 +38,29 @@ _smb_mgr = None
 _beacon_listener = None
 _cloud_decoy = None
 
+CHECKLIST_TEXT = """
+Mirage Client Deployment Checklist
+==================================
+See full templates in the repo: docs/ROE_TEMPLATE.md, docs/PORT_MAP_TEMPLATE.md,
+docs/DEPLOYMENT_CHECKLIST.md
+
+[ ] 1. Signed ROE (scope + ports + no-attack-back)
+[ ] 2. Written port map (avoid real SSH 22 / RDP 3389 / SMB 445)
+[ ] 3. mirage init --org ... --auth-ref ROE-... --sector ...
+[ ] 4. mirage deploy → health + coverage + live probe (curl/ssh)
+[ ] 5. mirage agree — who gets alerts & report cadence
+
+Quick path:
+  mirage init --org "Client" --auth-ref ROE-2026-001 --sector clinic
+  mirage agree --recipients "ops@client.tt" --channel webhook --cadence weekly
+  mirage deploy
+  mirage health && mirage coverage
+  curl -s http://127.0.0.1:8080/ >/dev/null
+  curl -s http://127.0.0.1:9000/ >/dev/null
+  mirage alerts
+  mirage report --story
+""".strip()
+
 
 def _on_event(event_type: str, source_ip: str = "", details: dict = None):
     emit(event_type, source_ip, details or {}, severity="high")
@@ -63,7 +86,49 @@ def cmd_init(args):
     print(f"    Sector/pack  : {cfg.get('sector') or 'general'}")
     print(f"    Auth ref     : {cfg.get('authorization_ref') or '(not set)'}")
     print(f"    SMB shares   : {', '.join(cfg.get('smb_shares') or [])}")
-    print("    Next: mirage deploy")
+    print(f"    RDP decoy    : port {cfg.get('ports', {}).get('rdp', 33890)} (non-standard by default)")
+    if not cfg.get("authorization_ref"):
+        print("    [!] Set --auth-ref to the signed ROE reference before deploy.")
+    print("    Next: mirage agree ...  then  mirage deploy")
+    print("    Checklist: mirage checklist")
+
+
+def cmd_agree(args):
+    """Record who gets alerts and how often story reports are delivered."""
+    cfg = load_config()
+    if args.recipients:
+        cfg["alert_recipients"] = args.recipients
+    if args.channel:
+        cfg["alert_channel"] = args.channel
+    if args.cadence:
+        cfg["report_cadence"] = args.cadence
+    if args.evidence:
+        cfg["evidence_policy"] = args.evidence
+    if args.webhook:
+        cfg["webhook_url"] = args.webhook
+        if cfg.get("alert_channel") == "console":
+            cfg["alert_channel"] = "both"
+    save_config(cfg)
+    log_auth("agree", cfg.get("authorization_ref", ""), "alert/report agreement set")
+    print("[+] Alert & report agreement saved")
+    print(f"    Recipients   : {cfg.get('alert_recipients') or '(not set)'}")
+    print(f"    Channel      : {cfg.get('alert_channel') or 'console'}")
+    print(f"    Report cadence: {cfg.get('report_cadence') or 'weekly'}")
+    print(f"    Evidence     : {cfg.get('evidence_policy') or 'on_request'}")
+    print(f"    Webhook      : {cfg.get('webhook_url') or 'none'}")
+
+
+def cmd_checklist(_args):
+    print(CHECKLIST_TEXT)
+    cfg = load_config()
+    print("\nCurrent config snapshot")
+    print("-" * 40)
+    print(f"  Org        : {cfg.get('organization_name') or '(not set)'}")
+    print(f"  ROE ref    : {cfg.get('authorization_ref') or '(not set)'}")
+    print(f"  Sector     : {cfg.get('sector') or 'general'}")
+    print(f"  Recipients : {cfg.get('alert_recipients') or '(not set)'}")
+    print(f"  Cadence    : {cfg.get('report_cadence') or 'weekly'}")
+    print(f"  Docs       : docs/ROE_TEMPLATE.md | PORT_MAP_TEMPLATE.md | DEPLOYMENT_CHECKLIST.md")
 
 
 def cmd_deploy(args):
@@ -72,6 +137,7 @@ def cmd_deploy(args):
     auth_ref = cfg.get("authorization_ref", "")
     if not auth_ref and not args.force:
         print("[!] No authorization_ref set. Use: mirage init --auth-ref ROE-XXXX")
+        print("    Complete docs/ROE_TEMPLATE.md and pass the ROE reference.")
         return
 
     if cfg.get("guardrails_enabled", True):
@@ -93,7 +159,9 @@ def cmd_deploy(args):
     jail_timeout = int(cfg.get("ssh_jail_timeout", 300))
 
     print(f"[*] Deploying Mirage {__version__}")
-    print(f"    Org={org} sector={sector} jail={'ON' if jail_on else 'OFF'} guardrails={'ON' if cfg.get('guardrails_enabled', True) else 'OFF'}")
+    print(f"    Org={org} sector={sector} ROE={auth_ref or 'NONE'} jail={'ON' if jail_on else 'OFF'}")
+    if cfg.get("alert_recipients"):
+        print(f"    Alerts → {cfg.get('alert_recipients')} ({cfg.get('alert_channel')}) cadence={cfg.get('report_cadence')}")
     print()
 
     print("[*] Fake services + SSH jail...")
@@ -162,7 +230,9 @@ def cmd_deploy(args):
         logger.warning("Mesh register failed: %s", e)
 
     log_auth("deploy", auth_ref, f"v2.2 deploy sector={sector}")
-    print("\n[+] Mirage live. Ctrl+C to stop.\n")
+    print("\n[+] Mirage live. Confirm with: mirage health")
+    print("    Live probe: curl :8080 and :9000, then ssh -p 2222 ubuntu@host")
+    print("    Ctrl+C to stop.\n")
 
     def _shutdown(sig, frame):
         print("\n[*] Stopping...")
@@ -195,10 +265,16 @@ def cmd_status(_args):
     print(f"Organization   : {cfg.get('organization_name') or '(not set)'}")
     print(f"Sector         : {cfg.get('sector') or 'general'}")
     print(f"Site ID        : {cfg.get('site_id') or '(not registered)'}")
+    print(f"ROE / auth ref : {cfg.get('authorization_ref') or '(not set)'}")
     print(f"SSH jail       : {'ON' if cfg.get('ssh_jail_enabled', True) else 'OFF'}")
     print(f"SMB / Beacon / Cloud : "
           f"{cfg.get('smb_enabled', True)} / {cfg.get('beacon_enabled', True)} / {cfg.get('cloud_decoy_enabled', True)}")
     print(f"Guardrails     : {'ON' if cfg.get('guardrails_enabled', True) else 'OFF'}")
+    print(f"Alert to       : {cfg.get('alert_recipients') or '(not set)'} via {cfg.get('alert_channel') or 'console'}")
+    print(f"Report cadence : {cfg.get('report_cadence') or 'weekly'}")
+    print(f"Evidence policy: {cfg.get('evidence_policy') or 'on_request'}")
+    ports = cfg.get("ports") or {}
+    print(f"Key ports      : ssh={ports.get('ssh')} http={ports.get('http')} rdp={ports.get('rdp')} smb={cfg.get('smb_port')}")
     gb = guardrails.status()
     if gb.get("circuit_breaker", {}).get("tripped"):
         print(f"Circuit breaker: TRIPPED — {gb['circuit_breaker'].get('reason')}")
@@ -281,12 +357,10 @@ def cmd_packs(_args):
 
 
 def cmd_killswitch(args):
-    """Trip or reset the circuit breaker (ROE / demo control)."""
     if args.reset:
         guardrails.reset_breaker()
         print("[+] Circuit breaker reset")
         return
-    # Force trip by flooding the recorder
     for _ in range(guardrails.CIRCUIT_BREAKER_THRESHOLD + 5):
         guardrails.check_source("killswitch")
     st = guardrails.status()
@@ -314,17 +388,28 @@ def cmd_clean(args):
 def main():
     parser = argparse.ArgumentParser(
         description=f"Mirage {__version__} — TrinTech Digital Defense",
-        epilog="Authorized defensive use only.",
+        epilog="Authorized defensive use only. Complete ROE before client deploy.",
     )
     parser.add_argument("--version", action="version", version=f"Mirage {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("init", help="Initialize")
+    p = sub.add_parser("init", help="Initialize with org, ROE ref, sector")
     p.add_argument("--org")
-    p.add_argument("--auth-ref")
+    p.add_argument("--auth-ref", help="Signed ROE reference")
     p.add_argument("--sector", help="general|clinic|retail|legal|finance|hospitality")
     p.add_argument("--beacon-url")
     p.set_defaults(func=cmd_init)
+
+    p = sub.add_parser("agree", help="Who gets alerts + report cadence")
+    p.add_argument("--recipients", help="Names or emails for alerts")
+    p.add_argument("--channel", choices=["console", "webhook", "both"])
+    p.add_argument("--cadence", choices=["weekly", "monthly", "per_critical_event"])
+    p.add_argument("--evidence", choices=["on_request", "per_critical", "monthly"])
+    p.add_argument("--webhook", help="Webhook URL for alerts")
+    p.set_defaults(func=cmd_agree)
+
+    p = sub.add_parser("checklist", help="Pilot deployment checklist")
+    p.set_defaults(func=cmd_checklist)
 
     p = sub.add_parser("deploy", help="Deploy full stack")
     p.add_argument("--force", action="store_true")
@@ -357,7 +442,7 @@ def main():
     p = sub.add_parser("health"); p.set_defaults(func=cmd_health)
     p = sub.add_parser("packs"); p.set_defaults(func=cmd_packs)
 
-    p = sub.add_parser("killswitch", help="Trip or reset anti-abuse circuit breaker")
+    p = sub.add_parser("killswitch", help="Trip or reset circuit breaker")
     p.add_argument("--reset", action="store_true")
     p.set_defaults(func=cmd_killswitch)
 
