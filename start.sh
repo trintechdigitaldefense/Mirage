@@ -62,7 +62,6 @@ ensure_repo() {
     if [[ -d "${ROOT}" ]] && [[ -n "$(ls -A "${ROOT}" 2>/dev/null || true)" ]]; then
       warn "${ROOT} exists but is not a git repo — cloning into ${ROOT}.git-new then swapping"
       git clone --branch "${BRANCH}" "${REPO_URL}" "${ROOT}.git-new"
-      # Prefer not to destroy user data; only swap if empty-ish
       if [[ ! -f "${ROOT}/mirage/cli.py" ]]; then
         rm -rf "${ROOT}"
         mv "${ROOT}.git-new" "${ROOT}"
@@ -113,9 +112,10 @@ cmd_install() {
 
 cmd_init() {
   need_cmd mirage || { err "Run: bash start.sh upgrade"; exit 1; }
-  local org="${ORG:-${2:-Client}}"
-  local roe="${ROE:-${3:-ROE-PENDING}}"
-  local sector="${SECTOR:-${4:-general}}"
+  # Remaining args after 'init' are $1 $2 $3 (shift already consumed the subcommand)
+  local org="${ORG:-${1:-Client}}"
+  local roe="${ROE:-${2:-ROE-PENDING}}"
+  local sector="${SECTOR:-${3:-general}}"
   log "Init org=${org} roe=${roe} sector=${sector}"
   mirage init --org "${org}" --auth-ref "${roe}" --sector "${sector}"
 }
@@ -127,7 +127,12 @@ cmd_deploy() {
     warn "Or: mirage init --org NAME --auth-ref ROE-XXXX --sector clinic"
   fi
   log "Deploying full Mirage stack (Ctrl+C to stop)..."
-  exec mirage deploy "${@:-}"
+  # Do not pass an empty string — that becomes an unrecognized argument
+  if [[ $# -gt 0 ]]; then
+    exec mirage deploy "$@"
+  else
+    exec mirage deploy
+  fi
 }
 
 cmd_status() {
@@ -146,7 +151,7 @@ cmd_probe() {
 
 cmd_report() {
   need_cmd mirage || exit 1
-  mirage report --story "$@"
+  mirage report --story
 }
 
 cmd_checklist() {
@@ -176,7 +181,7 @@ cmd_menu() {
     curl -fsSL ${REPO_RAW}/start.sh | bash -s -- upgrade
 
   Then:
-    cd ~/mirage   # or your clone path
+    cd /path/to/Mirage
     bash start.sh init
     bash start.sh deploy
 
@@ -184,14 +189,14 @@ EOF
 }
 
 case "${CMD}" in
-  upgrade|update|pull) cmd_upgrade "$@" ;;
-  install)             cmd_install "$@" ;;
+  upgrade|update|pull) cmd_upgrade ;;
+  install)             cmd_install ;;
   init)                cmd_init "$@" ;;
   deploy)              cmd_deploy "$@" ;;
-  status|health)       cmd_status "$@" ;;
-  probe|test)          cmd_probe "$@" ;;
-  report|story)        cmd_report "$@" ;;
-  checklist)           cmd_checklist "$@" ;;
+  status|health)       cmd_status ;;
+  probe|test)          cmd_probe ;;
+  report|story)        cmd_report ;;
+  checklist)           cmd_checklist ;;
   menu|help|-h|--help) cmd_menu ;;
   *)
     err "Unknown command: ${CMD}"
