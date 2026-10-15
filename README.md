@@ -7,6 +7,37 @@ Fake services, SSH jail, honey tokens, trails, SMB shares, cloud decoys and emai
 
 ---
 
+## One command — pull & upgrade (container)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/trintechdigitaldefense/Mirage/main/start.sh | bash -s -- upgrade
+```
+
+That clones (if needed), `git reset --hard origin/main`, installs deps, and reinstalls the `mirage` CLI.
+
+From an existing clone:
+
+```bash
+cd ~/mirage   # or your path
+bash start.sh upgrade
+```
+
+### start.sh commands
+
+| Command | What it does |
+|---------|----------------|
+| `upgrade` | **Pull + reinstall** (use this to update) |
+| `install` | pip install only |
+| `init` | `mirage init` (or `ORG= ROE= SECTOR= bash start.sh init`) |
+| `deploy` | Full stack (services, jail, canaries, SMB, beacons, cloud) |
+| `status` | status + health |
+| `probe` | curl HTTP + cloud, show recent alerts |
+| `report` | story report |
+| `checklist` | pilot checklist |
+| `menu` | help |
+
+---
+
 ## Client pilot path (required)
 
 1. **Sign ROE** — `docs/ROE_TEMPLATE.md` (scope, ports, no-attack-back)  
@@ -17,17 +48,13 @@ Fake services, SSH jail, honey tokens, trails, SMB shares, cloud decoys and emai
 6. Full checklist — `docs/DEPLOYMENT_CHECKLIST.md` or `mirage checklist`
 
 ```bash
-pip install -r requirements.txt && pip install -e .
-
+bash start.sh upgrade
 mirage checklist
 mirage init --org "Acme Medical" --auth-ref ROE-2026-001 --sector clinic
-mirage agree --recipients "ops@acme.tt" --channel both --cadence weekly --webhook https://hooks.example/mirage
-mirage deploy
-mirage health
-# live probe
-curl -s http://127.0.0.1:8080/ >/dev/null
-curl -s http://127.0.0.1:9000/ >/dev/null
-mirage alerts
+mirage agree --recipients "ops@acme.tt" --channel both --cadence weekly
+bash start.sh deploy
+# other terminal:
+mirage health && bash start.sh probe
 mirage report --story
 mirage evidence
 ```
