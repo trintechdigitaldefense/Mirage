@@ -9,3 +9,6 @@ build/
 *.egg-info/
 alerts.json
 decoy_files/
+*.BAK
+*.BAK/
+save_mirage.sh
