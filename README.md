@@ -1,6 +1,7 @@
 # Mirage — Active Deception Platform
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![ci](https://github.com/trintechdigitaldefense/Mirage/actions/workflows/ci.yml/badge.svg)](https://github.com/trintechdigitaldefense/Mirage/actions/workflows/ci.yml)
 
 **TrinTech Digital Defense** · Trinidad & Tobago 🇹🇹  
 **v2.2** — pilot-ready under signed ROE
