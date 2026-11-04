@@ -1,90 +1,63 @@
 # Mirage — Active Deception Platform
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![ci](https://github.com/trintechdigitaldefense/Mirage/actions/workflows/ci.yml/badge.svg)](https://github.com/trintechdigitaldefense/Mirage/actions/workflows/ci.yml)
-
 **TrinTech Digital Defense** · Trinidad & Tobago 🇹🇹  
-**v2.2** — pilot-ready under signed ROE
+**v2.3** — recon interruption + honey credentials + Sentinel hook
 
-Fake services, SSH jail, honey tokens, trails, SMB shares, cloud decoys and email canaries — turned into owner-readable stories and legal-grade evidence.
+Fake services, SSH jail, tarpits, DNS canaries, honey tokens, trails, SMB, cloud decoys — turned into owner-readable stories and legal-grade evidence.
 
 ---
 
-## One command — pull & upgrade (container)
+## One command — pull & upgrade
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/trintechdigitaldefense/Mirage/main/start.sh | bash -s -- upgrade
 ```
 
-That clones (if needed), `git reset --hard origin/main`, installs deps, and reinstalls the `mirage` CLI.
-
-From an existing clone:
-
 ```bash
-cd ~/mirage   # or your path
-bash start.sh upgrade
+cd /path/to/Mirage && bash start.sh upgrade && bash start.sh deploy
 ```
-
-### start.sh commands
-
-| Command | What it does |
-|---------|----------------|
-| `upgrade` | **Pull + reinstall** (use this to update) |
-| `install` | pip install only |
-| `init` | `mirage init` (or `ORG= ROE= SECTOR= bash start.sh init`) |
-| `deploy` | Full stack (services, jail, canaries, SMB, beacons, cloud) |
-| `status` | status + health |
-| `probe` | curl HTTP + cloud, show recent alerts |
-| `report` | story report |
-| `checklist` | pilot checklist |
-| `menu` | help |
 
 ---
 
-## Client pilot path (required)
+## v2.3 features
 
-1. **Sign ROE** — `docs/ROE_TEMPLATE.md` (scope, ports, no-attack-back)  
-2. **Port map** — `docs/PORT_MAP_TEMPLATE.md` (avoid real SSH 22 / RDP 3389 / SMB 445)  
-3. **Init** — org + ROE ref + sector  
-4. **Agree** — who gets alerts + report cadence  
-5. **Deploy** — confirm `health` + one live probe  
-6. Full checklist — `docs/DEPLOYMENT_CHECKLIST.md` or `mirage checklist`
+| Area | What |
+|------|------|
+| **Dynamic banner mutator** | IIS / Cisco / Apache / Win SMB banners; per-connection mutation confuses Nmap/Shodan |
+| **TCP tarpit** | Slow drip on decoy ports (default 2223, 3391, 4451) to burn scanner threads |
+| **Honey credentials** | `.env`, `aws_credentials`, `config.json` pointing at Mirage ports |
+| **DNS canaries** | UDP listener (5353) for `backup-vault.local`, `dev-db-admin.internal.local`, … |
+| **Redis / Postgres / Elastic** | Low-interaction decoys with authentic-looking errors |
+| **HTTP admin capture** | POST credentials logged; returns 500 / Invalid Gateway |
+| **Attack profiler** | Multi-decoy sequences → port_sweeper / credential_stuffing / MITRE tags |
+| **Sentinel hook** | JSONL + optional Unix socket; firewall DROP **off** unless ROE enables it |
+
+Default ports avoid production: SSH jail **2222**, RDP **33890**, SMB **4450**, Redis **63790**, Postgres **54320**, DNS canary **5353**.
+
+`sentinel_firewall_drop` defaults to **false** (observe-only). Enable only with written ROE for active response.
+
+---
+
+## Quick start
 
 ```bash
-bash start.sh upgrade
-mirage checklist
 mirage init --org "Acme Medical" --auth-ref ROE-2026-001 --sector clinic
 mirage agree --recipients "ops@acme.tt" --channel both --cadence weekly
-bash start.sh deploy
-# other terminal:
-mirage health && bash start.sh probe
+mirage deploy
+mirage health
+# probe
+curl -s http://127.0.0.1:8080/
+curl -s http://127.0.0.1:9000/
+dig @127.0.0.1 -p 5353 backup-vault.local
+mirage alerts
 mirage report --story
-mirage evidence
 ```
-
-Default decoy ports avoid production clashes: SSH jail **2222**, RDP **33890**, SMB **4450**, MySQL **3307**.
-
----
-
-## Commands
-
-| Command | Purpose |
-|---------|---------|
-| `checklist` | Pilot deployment checklist |
-| `init` | Org + ROE ref + sector |
-| `agree` | Alert recipients + report cadence |
-| `deploy` | Full stack |
-| `health` / `coverage` / `status` | Confirm sensors |
-| `alerts` / `report --story` | Events + narrative |
-| `evidence` | SHA-256 evidence zip |
-| `mesh` / `rotate` / `packs` | Multi-site, cosmetics, verticals |
-| `killswitch [--reset]` | Circuit breaker |
 
 ---
 
 ## Doctrine
 
-Passive observation only. No relay, no attack-back. Rate limits + circuit breaker enforced. Deploy only with written permission.
+Passive observation by default. No relay, no attack-back. Rate limits + circuit breaker. Firewall drops require explicit config + ROE.
 
 ---
 
