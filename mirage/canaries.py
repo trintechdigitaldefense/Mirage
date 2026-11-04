@@ -1,8 +1,4 @@
-"""Canary / decoy files and honey tokens.
-
-v2.3 adds honey-credential breadcrumbs (.env, aws_credentials, config.json)
-pointing at Mirage decoy ports.
-"""
+"""Canary / decoy files and honey tokens (v2.4)."""
 
 from __future__ import annotations
 
@@ -18,12 +14,22 @@ from .trails import build_trail_documents, save_trail_meta, load_trail_meta, res
 from .packs import pack_extra_docs
 from .email_canary import generate_email_canaries, render_invoice_canary, render_html_canary
 from .ad_decoy import render_accounts_file
+from .doc_canary import generate_document_canaries
 
 logger = logging.getLogger("mirage.canaries")
 
+# Fake OpenSSH private key header only — not a valid key, traps tools that grep for PEM
+FAKE_SSH_KEY = """-----BEGIN OPENSSH PRIVATE KEY-----
+DECOY_KEY_NOT_VALID_b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACDECOY/mirage/honey/token/placeholder/onlyAAAAEAAAAAtzc2gtZW
+QyNTUxOQAAACDECOY/mirage/honey/token/placeholder/onlyAAAAEH1kZWNveQECAwQF
+-----END OPENSSH PRIVATE KEY-----
+# Host: decoy-bastion.internal  Port: 2222
+# DECOY — use triggers Mirage SSH jail
+"""
+
 
 def _honey_credential_baits(org: str, http_port: int = 8080, mysql_port: int = 3307) -> List[Dict[str, Any]]:
-    """Plant false secrets that point back at Mirage listeners."""
     slug = org.lower().replace(" ", "-").replace("_", "-")[:24] or "company"
     return [
         {
@@ -52,6 +58,27 @@ def _honey_credential_baits(org: str, http_port: int = 8080, mysql_port: int = 3
             ),
         },
         {
+            "name": "aws_dotdir_credentials",
+            "relpath": "dot_aws/credentials",
+            "content": (
+                f"[default]\naws_access_key_id = AKIADECOY{slug.upper()[:8]}\n"
+                f"aws_secret_access_key = wJalrXUtnFEMI/DECOY/honey/token/key\n"
+                f"# Place as ~/.aws/credentials on bait hosts — DECOY\n"
+            ),
+        },
+        {
+            "name": "id_rsa_decoy",
+            "relpath": "ssh/id_rsa_decoy",
+            "content": FAKE_SSH_KEY,
+        },
+        {
+            "name": "id_rsa_decoy_pub",
+            "relpath": "ssh/id_rsa_decoy.pub",
+            "content": (
+                f"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5DECOYmiragehoney {org.lower().replace(' ', '')}@decoy-bastion\n"
+            ),
+        },
+        {
             "name": "config_json_honey",
             "relpath": "config/config.json",
             "content": (
@@ -62,28 +89,19 @@ def _honey_credential_baits(org: str, http_port: int = 8080, mysql_port: int = 3
                 f'  "db_user": "admin",\n'
                 f'  "db_password": "Pr0d_S3cure_2026!",\n'
                 f'  "admin_url": "http://127.0.0.1:{http_port}/login",\n'
-                f'  "backup_share": "\\\\files-01\\Backups",\n'
+                f'  "ssh_bastion": "decoy-bastion.internal:2222",\n'
                 '  "_comment": "DECOY — Mirage honey credentials"\n'
                 "}\n"
             ),
         },
         {
-            "name": "passwords_xlsx_note",
-            "relpath": "finance/Passwords_2026_README.txt",
+            "name": "browser_cookies_note",
+            "relpath": "browser/session_cookies_export.txt",
             "content": (
-                f"{org} — Password vault export pointer\n"
-                f"Open share: \\\\files-01\\Finance\\Passwords_2026.xlsx\n"
-                f"Web archive: http://127.0.0.1:{http_port}/vault/passwords\n"
-                f"# Canary breadcrumb — browsing this path alerts Mirage\n"
-            ),
-        },
-        {
-            "name": "payroll_pdf_note",
-            "relpath": "finance/Payroll_Q3_README.txt",
-            "content": (
-                f"{org} Payroll Q3 (confidential)\n"
-                f"Document staged at: http://127.0.0.1:9000/payroll.csv\n"
-                f"# Honey document pointer — cloud decoy bucket\n"
+                f"# {org} browser session export (decoy)\n"
+                f"session_id=DECOY_SESSION_TOKEN_DO_NOT_USE\n"
+                f"admin_panel=http://127.0.0.1:{http_port}/admin/\n"
+                f"# If dumped by credential tools, callbacks hit Mirage\n"
             ),
         },
     ]
@@ -100,24 +118,19 @@ def _build_default_baits(
 
     if sector in ("clinic", "medical", "healthcare", "health"):
         finance_name = "Patient_Billing_Summary_Q2.txt"
-        finance_body = (
-            f"CONFIDENTIAL — {org} Clinical Operations\n"
-            f"Q2 Patient Billing Summary\n"
-            f"Total billed: TT$ 1.85M\n"
-            f"# Decoy canary — interaction triggers alert\n"
-        )
+        finance_body = f"CONFIDENTIAL — {org} Clinical Operations\n# Decoy canary\n"
         extra = {
             "name": "patient_records_index",
             "relpath": "records/patient_index_snippet.txt",
-            "content": f"{org} — Restricted Patient Index (sample)\n# DECOY FILE\n",
+            "content": f"{org} — Restricted Patient Index\n# DECOY FILE\n",
         }
     elif sector in ("retail", "pos", "shop", "store"):
         finance_name = "Supplier_Invoices_Pending.txt"
-        finance_body = f"{org} — Accounts Payable\nPO-88421  TT$ 48,200\n# Decoy canary\n"
+        finance_body = f"{org} — Accounts Payable\n# Decoy canary\n"
         extra = {
             "name": "pos_config",
             "relpath": "pos/terminal_config.bak",
-            "content": f"# {org} POS\nMERCHANT_ID=DECOY8821\nTERMINAL_KEY=sk_live_decoy\n",
+            "content": f"# {org} POS\nMERCHANT_ID=DECOY8821\n",
         }
     elif sector in ("legal", "law", "firm"):
         finance_name = "Matter_Trust_Summary.txt"
@@ -125,35 +138,34 @@ def _build_default_baits(
         extra = {
             "name": "matter_index",
             "relpath": "matters/active_matters_index.txt",
-            "content": f"{org} Active Matters Index — Privileged\n# DECOY\n",
+            "content": f"{org} Active Matters Index\n# DECOY\n",
         }
     else:
         finance_name = "Q2_Board_Report.txt"
-        finance_body = f"CONFIDENTIAL — {org} Board Eyes Only\nQ2 Revenue: TT$ 4.2M\n# Decoy canary\n"
+        finance_body = f"CONFIDENTIAL — {org} Board Eyes Only\n# Decoy canary\n"
         extra = None
 
     tokens = generate_tokens(org=org, count=2, beacon_base=beacon_base)
     secrets_content = tokens_to_env_file(tokens, org=org)
     email_cans = generate_email_canaries(org=org, beacon_base=beacon_base, count=1)
+    doc_cans = generate_document_canaries(org=org, beacon_base=beacon_base or "http://127.0.0.1:8888")
 
     baits: List[Dict[str, Any]] = [
         {
             "name": "db_credentials",
             "relpath": "config/db_credentials.txt",
             "content": (
-                f"# {org} — Production Database Credentials — CONFIDENTIAL\n"
+                f"# {org} — Production Database Credentials\n"
                 f"DB_HOST=10.0.0.15\nDB_USER=admin\nDB_PASS=Pr0d_S3cure_2026!\n"
-                f"DB_NAME={org.lower().replace(' ', '_')}_erp\n"
-                f"# DECOY — any use or modification alerts\n"
+                f"# DECOY\n"
             ),
         },
         {
             "name": "vpn_config",
             "relpath": "config/company-vpn.ovpn",
             "content": (
-                f"# {org} corporate VPN profile\nclient\ndev tun\nproto udp\n"
-                f"remote vpn.internal.{org.lower().replace(' ', '')}.tt 1194\n"
-                f"auth-user-pass\n# DECOY\n"
+                f"# {org} corporate VPN\nclient\ndev tun\n"
+                f"remote vpn.internal.{org.lower().replace(' ', '')}.tt 1194\n# DECOY\n"
             ),
         },
         {
@@ -171,9 +183,8 @@ def _build_default_baits(
             "name": "admin_password",
             "relpath": "admin/passwords.txt",
             "content": (
-                f"# {org} privileged accounts — DO NOT DISTRIBUTE\n"
+                f"# {org} privileged accounts\n"
                 f"admin:Tr1nTech_Admin_2026!\nroot:ChangeMeImmediately!\n"
-                f"# See shares/README_Finance.txt for drive mappings\n"
             ),
         },
         {
@@ -195,8 +206,8 @@ def _build_default_baits(
         },
     ]
 
-    # v2.3 honey credentials
     baits.extend(_honey_credential_baits(org))
+    baits.extend(doc_cans)
 
     if extra:
         baits.append(extra)
@@ -251,7 +262,6 @@ class CanaryManager:
     def deploy(self, canary_defs: List[Dict] = None):
         defs = canary_defs or self.generate_baits()
         self.base_dir.mkdir(parents=True, exist_ok=True)
-
         trail_docs, trail_meta = build_trail_documents(org=self.organization)
         save_trail_meta(self.base_dir, trail_meta)
         self._trail_meta = trail_meta
@@ -276,15 +286,11 @@ class CanaryManager:
         self._start_watcher()
 
     def _emit_canary_event(self, event_type: str, canary: Dict):
-        details: Dict[str, Any] = {
-            "canary": canary["name"],
-            "path": canary["path"],
-        }
+        details: Dict[str, Any] = {"canary": canary["name"], "path": canary["path"]}
         hop = resolve_hop(self._trail_meta or load_trail_meta(self.base_dir), canary["path"])
         if hop:
             details["trail"] = hop
             event_type = "trail_hop" if "node" in hop or "hop_from" in hop else event_type
-
         if self.on_alert:
             self.on_alert(event_type=event_type, source_ip="local", details=details)
 
@@ -320,12 +326,6 @@ class CanaryManager:
         for c in self.canaries:
             try:
                 Path(c["path"]).unlink(missing_ok=True)
-            except OSError:
-                pass
-        meta = self.base_dir / ".mirage_trails.json"
-        if meta.exists():
-            try:
-                meta.unlink()
             except OSError:
                 pass
         self.canaries.clear()
