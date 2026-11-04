@@ -1,66 +1,38 @@
 # Mirage — Active Deception Platform
 
-**TrinTech Digital Defense** · Trinidad & Tobago 🇹🇹  
-**v2.3** — recon interruption + honey credentials + Sentinel hook
+**TrinTech Digital Defense** · **v2.4**
 
-Fake services, SSH jail, tarpits, DNS canaries, honey tokens, trails, SMB, cloud decoys — turned into owner-readable stories and legal-grade evidence.
-
----
-
-## One command — pull & upgrade
+## Upgrade
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/trintechdigitaldefense/Mirage/main/start.sh | bash -s -- upgrade
 ```
 
-```bash
-cd /path/to/Mirage && bash start.sh upgrade && bash start.sh deploy
-```
+## v2.4 highlights
 
----
+| Feature | Detail |
+|---------|--------|
+| **SSH + Telnet sandboxes** | Command logging only — no real OS execution (ports 2222 / 2323) |
+| **Web API decoys** | `/.env`, `/wp-login.php`, `/api/v1/auth`, `/admin/config.json` on **8081** |
+| **TCP tarpit / sinkhole** | Local slow-down only — **never** reflects traffic to the attacker |
+| **Micro-segmentation** | Optional iptables DROP via Sentinel (`sentinel_firewall_drop=false` by default) |
+| **Credential injection** | `id_rsa_decoy`, `~/.aws`-style files, browser session notes under `~/.mirage/decoys/` |
+| **Document web-bugs** | `Passwords_2026.html`, `Network_Topology.pdf` with beacon callbacks |
+| **MITRE mapper** | Every alert → `~/.mirage/siem_events.jsonl` with technique IDs |
 
-## v2.3 features
-
-| Area | What |
-|------|------|
-| **Dynamic banner mutator** | IIS / Cisco / Apache / Win SMB banners; per-connection mutation confuses Nmap/Shodan |
-| **TCP tarpit** | Slow drip on decoy ports (default 2223, 3391, 4451) to burn scanner threads |
-| **Honey credentials** | `.env`, `aws_credentials`, `config.json` pointing at Mirage ports |
-| **DNS canaries** | UDP listener (5353) for `backup-vault.local`, `dev-db-admin.internal.local`, … |
-| **Redis / Postgres / Elastic** | Low-interaction decoys with authentic-looking errors |
-| **HTTP admin capture** | POST credentials logged; returns 500 / Invalid Gateway |
-| **Attack profiler** | Multi-decoy sequences → port_sweeper / credential_stuffing / MITRE tags |
-| **Sentinel hook** | JSONL + optional Unix socket; firewall DROP **off** unless ROE enables it |
-
-Default ports avoid production: SSH jail **2222**, RDP **33890**, SMB **4450**, Redis **63790**, Postgres **54320**, DNS canary **5353**.
-
-`sentinel_firewall_drop` defaults to **false** (observe-only). Enable only with written ROE for active response.
-
----
-
-## Quick start
+## Probe
 
 ```bash
-mirage init --org "Acme Medical" --auth-ref ROE-2026-001 --sector clinic
-mirage agree --recipients "ops@acme.tt" --channel both --cadence weekly
 mirage deploy
-mirage health
-# probe
-curl -s http://127.0.0.1:8080/
-curl -s http://127.0.0.1:9000/
-dig @127.0.0.1 -p 5353 backup-vault.local
+curl -s http://127.0.0.1:8081/.env
+curl -s http://127.0.0.1:8081/wp-login.php
+curl -s -X POST http://127.0.0.1:8081/api/v1/auth -d 'user=a&pass=b'
 mirage alerts
-mirage report --story
+tail ~/.mirage/siem_events.jsonl
 ```
-
----
 
 ## Doctrine
 
-Passive observation by default. No relay, no attack-back. Rate limits + circuit breaker. Firewall drops require explicit config + ROE.
-
----
-
-**TrinTech Digital Defense** · trintechdigitaldefense@gmail.com · +1 (868) 362-0679  
+Passive by default. No attack-back. Sinkhole = local tarpit only. Firewall isolation requires explicit ROE + config.
 
 *Defend. Detect. Dominate.*
