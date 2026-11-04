@@ -43,7 +43,7 @@ def emit(event_type: str, source_ip: str = "",
                 )
             return
 
-    key = f"{event_type}:{source_ip}:{details.get('service', details.get('canary', ''))}"
+    key = f"{event_type}:{source_ip}:{details.get('service', details.get('canary', details.get('path', '')))}"
     cooldown = int(cfg.get("alert_cooldown_seconds", 300))
     if is_in_cooldown(key, cooldown):
         return
@@ -51,7 +51,16 @@ def emit(event_type: str, source_ip: str = "",
     log_event(event_type, source_ip, details, severity, auth_ref)
     set_cooldown(key)
 
-    # Profiler — sequence behaviour
+    # MITRE SIEM stream
+    mitre_payload = None
+    if cfg.get("mitre_siem_stream", True):
+        try:
+            from .mitre_mapper import stream_siem
+
+            mitre_payload = stream_siem(event_type, source_ip, details)
+        except Exception as e:
+            logger.debug("MITRE stream skip: %s", e)
+
     if cfg.get("profiler_enabled", True) and event_type != "attack_profile":
         try:
             from . import profiler
@@ -63,7 +72,6 @@ def emit(event_type: str, source_ip: str = "",
         except Exception as e:
             logger.debug("Profiler skip: %s", e)
 
-    # Sentinel integration (IPC file + optional firewall)
     if cfg.get("sentinel_integration", True):
         try:
             from .sentinel_hook import on_mirage_event
@@ -78,10 +86,19 @@ def emit(event_type: str, source_ip: str = "",
         msg = f"DNS canary lookup '{details.get('qname')}' from {source_ip}"
     elif event_type == "tarpit_hold":
         msg = f"Scanner held in tarpit on port {details.get('port')} from {source_ip}"
+    elif event_type == "web_api_hit":
+        msg = f"Web API decoy {details.get('method')} {details.get('path')} from {source_ip}"
     elif event_type == "attack_profile":
         msg = f"Profile {details.get('profile')}: {details.get('summary', '')}"
     elif event_type == "http_login_capture":
         msg = f"Credentials submitted to decoy admin portal from {source_ip}"
+    elif event_type.startswith("telnet_jail"):
+        if event_type == "telnet_jail_command":
+            msg = f"Telnet jail command from {source_ip}: {details.get('command', '')!r}"
+        elif event_type == "telnet_jail_login":
+            msg = f"Telnet jail login as {details.get('username', '?')} from {source_ip}"
+        else:
+            msg = f"Telnet jail ({event_type}) from {source_ip or 'unknown'}"
     elif event_type.startswith("ssh_jail"):
         if event_type == "ssh_jail_command":
             msg = f"SSH jail command from {source_ip}: {details.get('command', '')!r}"
@@ -94,30 +111,34 @@ def emit(event_type: str, source_ip: str = "",
         msg = f"Attacker interaction with fake {str(svc).upper()} service from {source_ip or 'unknown'}"
 
     if cfg.get("enable_console_alerts", True):
+        extra = ""
+        if mitre_payload and mitre_payload.get("technique_ids"):
+            extra = f"\nMITRE: {', '.join(mitre_payload['technique_ids'])}"
         if RICH:
             console.print(Panel(
                 f"[bold red]{msg}[/bold red]\n"
                 f"Type: {event_type}\n"
                 f"Source: {source_ip or 'n/a'}\n"
-                f"Details: {json.dumps(details)[:120]}",
+                f"Details: {json.dumps(details)[:100]}{extra}",
                 title="MIRAGE ALERT",
                 border_style="red",
             ))
         else:
             print(f"\n!!! MIRAGE ALERT: {msg}")
-            print(f"    Type: {event_type} | Source: {source_ip}")
+            print(f"    Type: {event_type} | Source: {source_ip}{extra}")
 
     webhook = cfg.get("webhook_url")
     if webhook:
         try:
             payload = {
                 "source": "Mirage",
-                "version": "2.3.0",
+                "version": "2.4.0",
                 "event_type": event_type,
                 "source_ip": source_ip,
                 "message": msg,
                 "details": details,
                 "authorization_ref": auth_ref,
+                "mitre": mitre_payload,
             }
             requests.post(webhook, json=payload, timeout=8)
         except Exception as e:
