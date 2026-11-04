@@ -2,11 +2,12 @@
 
 import json
 import logging
-from typing import Dict, Any, Optional
+from typing import Any, Dict
 
 try:
     from rich.console import Console
     from rich.panel import Panel
+
     console = Console()
     RICH = True
 except ImportError:
@@ -28,12 +29,10 @@ def emit(event_type: str, source_ip: str = "",
     auth_ref = cfg.get("authorization_ref", "")
     details = details or {}
 
-    # Feature 12 — guardrails
     if cfg.get("guardrails_enabled", True):
         allowed, reason = guardrails.check_source(source_ip or "unknown")
         if not allowed:
             logger.warning("Guardrail blocked alert %s from %s: %s", event_type, source_ip, reason)
-            # Still log a suppressed marker for forensics (no webhook spam)
             if reason.startswith("Circuit") or "circuit" in reason.lower():
                 log_event(
                     "guardrail_circuit_open",
@@ -44,7 +43,6 @@ def emit(event_type: str, source_ip: str = "",
                 )
             return
 
-    # Cooldown key
     key = f"{event_type}:{source_ip}:{details.get('service', details.get('canary', ''))}"
     cooldown = int(cfg.get("alert_cooldown_seconds", 300))
     if is_in_cooldown(key, cooldown):
@@ -53,9 +51,37 @@ def emit(event_type: str, source_ip: str = "",
     log_event(event_type, source_ip, details, severity, auth_ref)
     set_cooldown(key)
 
-    # Human message
+    # Profiler — sequence behaviour
+    if cfg.get("profiler_enabled", True) and event_type != "attack_profile":
+        try:
+            from . import profiler
+
+            def _profile_emit(et, sip, det):
+                emit(et, sip, det, severity=det.get("severity", "high"))
+
+            profiler.record(event_type, source_ip, details, on_profile=_profile_emit)
+        except Exception as e:
+            logger.debug("Profiler skip: %s", e)
+
+    # Sentinel integration (IPC file + optional firewall)
+    if cfg.get("sentinel_integration", True):
+        try:
+            from .sentinel_hook import on_mirage_event
+
+            on_mirage_event(event_type, source_ip, details)
+        except Exception as e:
+            logger.debug("Sentinel hook skip: %s", e)
+
     if "canary" in event_type:
         msg = f"Canary '{details.get('canary')}' was {event_type.split('_')[-1]}"
+    elif event_type == "dns_canary_lookup":
+        msg = f"DNS canary lookup '{details.get('qname')}' from {source_ip}"
+    elif event_type == "tarpit_hold":
+        msg = f"Scanner held in tarpit on port {details.get('port')} from {source_ip}"
+    elif event_type == "attack_profile":
+        msg = f"Profile {details.get('profile')}: {details.get('summary', '')}"
+    elif event_type == "http_login_capture":
+        msg = f"Credentials submitted to decoy admin portal from {source_ip}"
     elif event_type.startswith("ssh_jail"):
         if event_type == "ssh_jail_command":
             msg = f"SSH jail command from {source_ip}: {details.get('command', '')!r}"
@@ -65,9 +91,8 @@ def emit(event_type: str, source_ip: str = "",
             msg = f"SSH jail event ({event_type}) from {source_ip or 'unknown'}"
     else:
         svc = details.get("service", "unknown")
-        msg = f"Attacker interaction with fake {svc.upper()} service from {source_ip or 'unknown'}"
+        msg = f"Attacker interaction with fake {str(svc).upper()} service from {source_ip or 'unknown'}"
 
-    # Console
     if cfg.get("enable_console_alerts", True):
         if RICH:
             console.print(Panel(
@@ -82,13 +107,12 @@ def emit(event_type: str, source_ip: str = "",
             print(f"\n!!! MIRAGE ALERT: {msg}")
             print(f"    Type: {event_type} | Source: {source_ip}")
 
-    # Webhook
     webhook = cfg.get("webhook_url")
     if webhook:
         try:
             payload = {
                 "source": "Mirage",
-                "version": "2.1.0",
+                "version": "2.3.0",
                 "event_type": event_type,
                 "source_ip": source_ip,
                 "message": msg,
