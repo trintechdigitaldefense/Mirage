@@ -19,6 +19,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "mysql": 3307,
         "ftp": 2121,
         "rdp": 33890,
+        "redis": 63790,
+        "postgres": 54320,
+        "elastic": 9200,
     },
     "ssh_jail_enabled": True,
     "ssh_jail_timeout": 300,
@@ -30,6 +33,24 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "beacon_base_url": "",
     "cloud_decoy_enabled": True,
     "cloud_decoy_port": 9000,
+    # v2.3 — recon interruption
+    "banner_per_connection": True,
+    "tarpit_enabled": True,
+    "tarpit_ports": [2223, 3391, 4451],
+    "tarpit_drip_interval": 2.0,
+    "tarpit_max_session_sec": 120.0,
+    "dns_canary_enabled": True,
+    "dns_canary_port": 5353,
+    "dns_canary_names": [
+        "dev-db-admin.internal.local",
+        "backup-vault.local",
+        "payroll-sql.internal.local",
+        "vpn-gateway-mgmt.local",
+        "ad-backup.corp.local",
+    ],
+    "profiler_enabled": True,
+    "sentinel_integration": True,
+    "sentinel_firewall_drop": False,  # OFF unless ROE allows active response
     "guardrails_enabled": True,
     "rate_limit_per_source": 30,
     "rate_limit_window_sec": 60,
@@ -38,11 +59,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "cosmetics": {},
     "canary_base_dir": str(Path.home() / ".mirage" / "decoys"),
     "alert_cooldown_seconds": 300,
-    # Agreed during ROE / checklist section 5
     "alert_recipients": "",
-    "alert_channel": "console",  # console | webhook | both
-    "report_cadence": "weekly",  # weekly | monthly | per_critical_event
-    "evidence_policy": "on_request",  # on_request | per_critical | monthly
+    "alert_channel": "console",
+    "report_cadence": "weekly",
+    "evidence_policy": "on_request",
 }
 
 CONFIG_PATH = Path.home() / ".mirage" / "config.json"
@@ -65,7 +85,6 @@ def load_config() -> Dict[str, Any]:
             user = json.load(f)
         cfg = DEFAULT_CONFIG.copy()
         cfg.update(user)
-        # merge ports dict so partial user ports don't wipe defaults
         if isinstance(user.get("ports"), dict):
             ports = dict(DEFAULT_CONFIG["ports"])
             ports.update(user["ports"])
