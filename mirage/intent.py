@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-
 INTENT_RULES: List[Dict[str, Any]] = [
     {
         "match": ["ssh_jail_command"],
@@ -21,6 +20,62 @@ INTENT_RULES: List[Dict[str, Any]] = [
         "confidence": 0.95,
         "attack": ["T1110", "T1078", "T1021.004"],
         "severity": "critical",
+    },
+    {
+        "match": ["http_login_capture"],
+        "intent": "credential_access",
+        "verdict": "Credentials were typed into a decoy admin/VPN portal — high-confidence credential harvesting attempt.",
+        "confidence": 0.96,
+        "attack": ["T1110", "T1078"],
+        "severity": "critical",
+    },
+    {
+        "match": ["dns_canary_lookup"],
+        "intent": "internal_recon",
+        "verdict": "A decoy internal DNS name was queried — active directory or host enumeration before any TCP connect.",
+        "confidence": 0.93,
+        "attack": ["T1018", "T1046"],
+        "severity": "high",
+    },
+    {
+        "match": ["tarpit_hold"],
+        "intent": "automated_scan",
+        "verdict": "Connection held in TCP tarpit — typical of automated scanners that leave sockets open.",
+        "confidence": 0.80,
+        "attack": ["T1046", "T1595"],
+        "severity": "medium",
+    },
+    {
+        "match": ["attack_profile"],
+        "intent": "profiled_campaign",
+        "verdict": "Same source hit multiple decoys in sequence — behaviour classified into an attack profile with MITRE tags.",
+        "confidence": 0.90,
+        "attack": ["T1046", "T1595"],
+        "severity": "high",
+    },
+    {
+        "match": ["decoy_redis", "redis"],
+        "intent": "data_discovery",
+        "verdict": "Redis decoy touched — often credential stuffing or unauthenticated cache abuse probes.",
+        "confidence": 0.78,
+        "attack": ["T1046", "T1110"],
+        "severity": "high",
+    },
+    {
+        "match": ["decoy_postgres", "postgres"],
+        "intent": "data_discovery",
+        "verdict": "PostgreSQL decoy interaction — database reconnaissance or brute force.",
+        "confidence": 0.78,
+        "attack": ["T1046", "T1213"],
+        "severity": "high",
+    },
+    {
+        "match": ["decoy_elastic", "elastic"],
+        "intent": "data_discovery",
+        "verdict": "Elasticsearch decoy accessed — hunting exposed search indexes or credentials.",
+        "confidence": 0.80,
+        "attack": ["T1046", "T1213"],
+        "severity": "high",
     },
     {
         "match": ["ssh_jail_session_end"],
@@ -135,6 +190,7 @@ def classify_event(event: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(details, str):
         try:
             import json
+
             details = json.loads(details)
         except Exception:
             details = {}
