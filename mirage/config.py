@@ -11,7 +11,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "webhook_url": None,
     "enable_console_alerts": True,
     "listen_address": "0.0.0.0",
-    # Decoy ports — avoid real SSH 22, RDP 3389, SMB 445, MySQL 3306
     "ports": {
         "ssh": 2222,
         "http": 8080,
@@ -25,6 +24,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "ssh_jail_enabled": True,
     "ssh_jail_timeout": 300,
+    "telnet_jail_enabled": True,
+    "telnet_jail_port": 2323,
+    "web_api_enabled": True,
+    "web_api_port": 8081,
     "smb_enabled": True,
     "smb_port": 4450,
     "smb_shares": ["Finance", "HR", "Backups"],
@@ -33,12 +36,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "beacon_base_url": "",
     "cloud_decoy_enabled": True,
     "cloud_decoy_port": 9000,
-    # v2.3 — recon interruption
     "banner_per_connection": True,
     "tarpit_enabled": True,
     "tarpit_ports": [2223, 3391, 4451],
     "tarpit_drip_interval": 2.0,
     "tarpit_max_session_sec": 120.0,
+    # Sinkhole = divert trap traffic to local tarpit only (never to attacker)
+    "sinkhole_enabled": True,
     "dns_canary_enabled": True,
     "dns_canary_port": 5353,
     "dns_canary_names": [
@@ -49,8 +53,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "ad-backup.corp.local",
     ],
     "profiler_enabled": True,
+    "mitre_siem_stream": True,
     "sentinel_integration": True,
-    "sentinel_firewall_drop": False,  # OFF unless ROE allows active response
+    "sentinel_firewall_drop": False,
     "guardrails_enabled": True,
     "rate_limit_per_source": 30,
     "rate_limit_window_sec": 60,
