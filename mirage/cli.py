@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mirage v2.3 — Active Deception Platform CLI"""
+"""Mirage v2.4 — Active Deception Platform CLI"""
 
 from __future__ import annotations
 
@@ -20,6 +20,8 @@ from .beacons import BeaconListener
 from .cloud_decoy import CloudDecoy
 from .tarpit import TarpitManager
 from .dns_canary import DNSCanary
+from .telnet_jail import TelnetJail
+from .web_api import WebAPIDecoy
 from .alerts import emit
 from .report import generate_report
 from .intent import classify_event
@@ -41,22 +43,13 @@ _beacon_listener = None
 _cloud_decoy = None
 _tarpit_mgr = None
 _dns_canary = None
+_telnet_jail = None
+_web_api = None
 
 CHECKLIST_TEXT = """
 Mirage Client Deployment Checklist
 ==================================
-See docs/ROE_TEMPLATE.md, docs/PORT_MAP_TEMPLATE.md, docs/DEPLOYMENT_CHECKLIST.md
-
-[ ] 1. Signed ROE (scope + ports + no-attack-back)
-[ ] 2. Written port map (avoid real SSH 22 / RDP 3389 / SMB 445)
-[ ] 3. mirage init --org ... --auth-ref ROE-... --sector ...
-[ ] 4. mirage deploy → health + coverage + live probe
-[ ] 5. mirage agree — who gets alerts & report cadence
-
-Quick path:
-  mirage init --org "Client" --auth-ref ROE-2026-001 --sector clinic
-  mirage agree --recipients "ops@client.tt" --channel webhook --cadence weekly
-  mirage deploy
+[ ] 1. Signed ROE  [ ] 2. Port map  [ ] 3. init  [ ] 4. deploy+probe  [ ] 5. agree
 """.strip()
 
 
@@ -83,8 +76,6 @@ def cmd_init(args):
     print(f"    Organization : {cfg.get('organization_name') or '(not set)'}")
     print(f"    Sector/pack  : {cfg.get('sector') or 'general'}")
     print(f"    Auth ref     : {cfg.get('authorization_ref') or '(not set)'}")
-    print(f"    SMB shares   : {', '.join(cfg.get('smb_shares') or [])}")
-    print("    Next: mirage agree ...  then  mirage deploy")
 
 
 def cmd_agree(args):
@@ -102,28 +93,19 @@ def cmd_agree(args):
         if cfg.get("alert_channel") == "console":
             cfg["alert_channel"] = "both"
     save_config(cfg)
-    log_auth("agree", cfg.get("authorization_ref", ""), "alert/report agreement set")
     print("[+] Alert & report agreement saved")
-    print(f"    Recipients   : {cfg.get('alert_recipients') or '(not set)'}")
-    print(f"    Channel      : {cfg.get('alert_channel') or 'console'}")
-    print(f"    Report cadence: {cfg.get('report_cadence') or 'weekly'}")
 
 
 def cmd_checklist(_args):
     print(CHECKLIST_TEXT)
     cfg = load_config()
-    print("\nCurrent config snapshot")
-    print("-" * 40)
-    print(f"  Org        : {cfg.get('organization_name') or '(not set)'}")
-    print(f"  ROE ref    : {cfg.get('authorization_ref') or '(not set)'}")
-    print(f"  Sector     : {cfg.get('sector') or 'general'}")
-    print(f"  Tarpit     : {cfg.get('tarpit_enabled', True)}")
-    print(f"  DNS canary : {cfg.get('dns_canary_enabled', True)}")
-    print(f"  Sentinel   : {cfg.get('sentinel_integration', True)} (fw_drop={cfg.get('sentinel_firewall_drop', False)})")
+    print(f"  Org={cfg.get('organization_name')} ROE={cfg.get('authorization_ref')}")
+    print(f"  Telnet={cfg.get('telnet_jail_enabled')} WebAPI={cfg.get('web_api_enabled')} SIEM={cfg.get('mitre_siem_stream')}")
 
 
 def cmd_deploy(args):
-    global _service_mgr, _canary_mgr, _smb_mgr, _beacon_listener, _cloud_decoy, _tarpit_mgr, _dns_canary
+    global _service_mgr, _canary_mgr, _smb_mgr, _beacon_listener, _cloud_decoy
+    global _tarpit_mgr, _dns_canary, _telnet_jail, _web_api
     cfg = load_config()
     auth_ref = cfg.get("authorization_ref", "")
     if not auth_ref and not args.force:
@@ -145,28 +127,44 @@ def cmd_deploy(args):
     if not beacon_base and cfg.get("beacon_enabled", True):
         beacon_base = f"http://127.0.0.1:{cfg.get('beacon_port', 8888)}"
 
-    jail_on = cfg.get("ssh_jail_enabled", True)
-    jail_timeout = int(cfg.get("ssh_jail_timeout", 300))
-
     print(f"[*] Deploying Mirage {__version__}")
-    print(f"    Org={org} sector={sector} ROE={auth_ref or 'NONE'} jail={'ON' if jail_on else 'OFF'}")
-    print(f"    Banner mutate={cfg.get('banner_per_connection', True)} tarpit={cfg.get('tarpit_enabled', True)} dns={cfg.get('dns_canary_enabled', True)}")
+    print(f"    Org={org} sector={sector} ROE={auth_ref or 'NONE'}")
     print()
 
-    print("[*] Fake services + SSH jail + Redis/Postgres/Elastic...")
+    print("[*] Fake services + SSH jail...")
     _service_mgr = ServiceManager(
         ports=cfg.get("ports", {}),
         listen_addr=cfg.get("listen_address", "0.0.0.0"),
         on_connect=_on_event,
-        ssh_jail=jail_on,
-        ssh_jail_timeout=jail_timeout,
+        ssh_jail=cfg.get("ssh_jail_enabled", True),
+        ssh_jail_timeout=int(cfg.get("ssh_jail_timeout", 300)),
     )
     _service_mgr.deploy()
     for s in _service_mgr.status():
         print(f"       {s.get('name', '?'):12} port {s.get('port')}")
 
+    if cfg.get("telnet_jail_enabled", True):
+        print("[*] Telnet command sandbox...")
+        _telnet_jail = TelnetJail(
+            port=int(cfg.get("telnet_jail_port", 2323)),
+            listen_addr=cfg.get("listen_address", "0.0.0.0"),
+            on_event=_on_event,
+        )
+        if _telnet_jail.start():
+            print(f"       telnet_jail port {cfg.get('telnet_jail_port', 2323)}")
+
+    if cfg.get("web_api_enabled", True):
+        print("[*] Decoy web API endpoints...")
+        _web_api = WebAPIDecoy(
+            port=int(cfg.get("web_api_port", 8081)),
+            listen_addr=cfg.get("listen_address", "0.0.0.0"),
+            on_event=_on_event,
+        )
+        if _web_api.start():
+            print(f"       web_api    port {cfg.get('web_api_port', 8081)} (/.env /wp-login /api/v1/auth)")
+
     if cfg.get("tarpit_enabled", True):
-        print("[*] TCP tarpit (scanner slow-down)...")
+        print("[*] TCP tarpit / sinkhole...")
         _tarpit_mgr = TarpitManager(
             ports=list(cfg.get("tarpit_ports") or [2223, 3391, 4451]),
             listen_addr=cfg.get("listen_address", "0.0.0.0"),
@@ -176,10 +174,10 @@ def cmd_deploy(args):
         )
         _tarpit_mgr.deploy()
         for s in _tarpit_mgr.status():
-            print(f"       tarpit      port {s['port']} drip={s['drip_interval']}s")
+            print(f"       tarpit      port {s['port']}")
 
     if cfg.get("dns_canary_enabled", True):
-        print("[*] DNS canary listener...")
+        print("[*] DNS canary...")
         _dns_canary = DNSCanary(
             port=int(cfg.get("dns_canary_port", 5353)),
             listen_addr=cfg.get("listen_address", "0.0.0.0"),
@@ -187,9 +185,9 @@ def cmd_deploy(args):
             on_event=_on_event,
         )
         if _dns_canary.start():
-            print(f"       dns canary  port {cfg.get('dns_canary_port', 5353)} names={len(cfg.get('dns_canary_names') or [])}")
+            print(f"       dns canary  port {cfg.get('dns_canary_port', 5353)}")
 
-    print("[*] Canaries / honey credentials / trails / tokens...")
+    print("[*] Canaries / credentials / doc web-bugs...")
     _canary_mgr = CanaryManager(
         base_dir=cfg.get("canary_base_dir"),
         on_alert=_on_event,
@@ -200,9 +198,9 @@ def cmd_deploy(args):
     _canary_mgr.deploy()
     print(f"       {len(_canary_mgr.status())} decoy files deployed")
 
-    shares = cfg.get("smb_shares") or pack_share_names(sector)
     if cfg.get("smb_enabled", True):
-        print("[*] Decoy SMB shares...")
+        print("[*] Decoy SMB...")
+        shares = cfg.get("smb_shares") or pack_share_names(sector)
         _smb_mgr = SMBManager(
             port=int(cfg.get("smb_port", 4450)),
             listen_addr=cfg.get("listen_address", "0.0.0.0"),
@@ -210,8 +208,6 @@ def cmd_deploy(args):
             on_connect=_on_event,
         )
         _smb_mgr.deploy()
-        for s in _smb_mgr.status():
-            print(f"       smb port {s['port']} shares={s['shares']}")
 
     if cfg.get("beacon_enabled", True):
         print("[*] Beacon listener...")
@@ -223,10 +219,10 @@ def cmd_deploy(args):
             known_ids=known,
         )
         _beacon_listener.start()
-        print(f"       beacon port {cfg.get('beacon_port', 8888)} tokens={len(known)}")
+        print(f"       beacon port {cfg.get('beacon_port', 8888)}")
 
     if cfg.get("cloud_decoy_enabled", True):
-        print("[*] Cloud decoy bucket...")
+        print("[*] Cloud decoy...")
         _cloud_decoy = CloudDecoy(
             org=org,
             port=int(cfg.get("cloud_decoy_port", 9000)),
@@ -234,22 +230,25 @@ def cmd_deploy(args):
             on_event=_on_event,
         )
         if _cloud_decoy.start():
-            print(f"       cloud decoy port {cfg.get('cloud_decoy_port', 9000)}")
+            print(f"       cloud port {cfg.get('cloud_decoy_port', 9000)}")
 
     try:
         site = register_site()
-        print(f"[+] Mesh site {site.get('site_id')} coverage={site.get('coverage_score')}%")
+        print(f"[+] Mesh site {site.get('site_id')}")
     except Exception as e:
         logger.warning("Mesh register failed: %s", e)
 
-    log_auth("deploy", auth_ref, f"v{__version__} deploy sector={sector}")
-    print("\n[+] Mirage live. Confirm with: mirage health")
-    print("    Probe: curl :8080 :9000 ; dig @127.0.0.1 -p 5353 backup-vault.local")
+    log_auth("deploy", auth_ref, f"v{__version__} deploy")
+    print("\n[+] Mirage live.")
+    print("    Probe: curl :8080 :8081/.env :9000 ; dig @127.0.0.1 -p 5353 backup-vault.local")
     print("    Ctrl+C to stop.\n")
 
     def _shutdown(sig, frame):
         print("\n[*] Stopping...")
-        for mgr in (_service_mgr, _canary_mgr, _smb_mgr, _beacon_listener, _cloud_decoy, _tarpit_mgr, _dns_canary):
+        for mgr in (
+            _service_mgr, _canary_mgr, _smb_mgr, _beacon_listener, _cloud_decoy,
+            _tarpit_mgr, _dns_canary, _telnet_jail, _web_api,
+        ):
             if mgr:
                 try:
                     if hasattr(mgr, "stop_all"):
@@ -258,7 +257,6 @@ def cmd_deploy(args):
                         mgr.stop()
                 except Exception:
                     pass
-        log_auth("stop", auth_ref, "manual stop")
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _shutdown)
@@ -276,15 +274,12 @@ def cmd_status(_args):
     print("=" * 50)
     print(f"Version        : {__version__}")
     print(f"Organization   : {cfg.get('organization_name') or '(not set)'}")
-    print(f"Sector         : {cfg.get('sector') or 'general'}")
-    print(f"ROE / auth ref : {cfg.get('authorization_ref') or '(not set)'}")
-    print(f"SSH jail       : {'ON' if cfg.get('ssh_jail_enabled', True) else 'OFF'}")
+    print(f"ROE            : {cfg.get('authorization_ref') or '(not set)'}")
+    print(f"SSH / Telnet   : {cfg.get('ssh_jail_enabled', True)} / {cfg.get('telnet_jail_enabled', True)}")
+    print(f"Web API        : {cfg.get('web_api_enabled', True)} port {cfg.get('web_api_port', 8081)}")
     print(f"Tarpit / DNS   : {cfg.get('tarpit_enabled', True)} / {cfg.get('dns_canary_enabled', True)}")
-    print(f"Profiler       : {cfg.get('profiler_enabled', True)}")
-    print(f"Sentinel       : {cfg.get('sentinel_integration', True)} fw_drop={cfg.get('sentinel_firewall_drop', False)}")
-    print(f"Banner mutate  : per_conn={cfg.get('banner_per_connection', True)}")
-    ports = cfg.get("ports") or {}
-    print(f"Key ports      : ssh={ports.get('ssh')} http={ports.get('http')} redis={ports.get('redis')} dns={cfg.get('dns_canary_port')}")
+    print(f"MITRE SIEM     : {cfg.get('mitre_siem_stream', True)} → ~/.mirage/siem_events.jsonl")
+    print(f"Sentinel fw    : {cfg.get('sentinel_firewall_drop', False)} (default OFF)")
 
 
 def cmd_alerts(args):
@@ -292,13 +287,9 @@ def cmd_alerts(args):
     if not events:
         print("No deception events recorded yet.")
         return
-    print(f"=== Recent Mirage Events (last {len(events)}) ===")
     for e in events:
         cls = classify_event(e)
-        print(
-            f"  [{e['timestamp']}] {e['event_type']:25} "
-            f"src={e.get('source_ip') or 'n/a':15} intent={cls.get('intent', '?')}"
-        )
+        print(f"  [{e['timestamp']}] {e['event_type']:25} src={e.get('source_ip') or 'n/a':15} intent={cls.get('intent', '?')}")
 
 
 def cmd_report(args):
@@ -314,14 +305,11 @@ def cmd_bait(args):
     beacon_base = cfg.get("beacon_base_url") or f"http://127.0.0.1:{cfg.get('beacon_port', 8888)}"
     mgr = CanaryManager(base_dir=cfg.get("canary_base_dir"), organization=org, sector=sector, beacon_base=beacon_base)
     baits = mgr.generate_baits(org=org, sector=sector)
-    print(f"=== Decoy Factory — {org} ({sector}) ===\n")
     for b in baits:
         print(f"  {b['name']:24} → {b['relpath']}")
     if args.write:
         mgr.deploy(baits)
-        print("[+] Written to disk")
-    else:
-        print("\nPass --write to create files.")
+        print("[+] Written")
 
 
 def cmd_coverage(_args):
@@ -329,14 +317,12 @@ def cmd_coverage(_args):
 
 
 def cmd_evidence(args):
-    path = export_evidence(hours=args.hours or 24, engagement_id=args.engagement or "")
-    print(f"[+] Evidence bundle: {path}")
+    print(f"[+] {export_evidence(hours=args.hours or 24, engagement_id=args.engagement or '')}")
 
 
 def cmd_mesh(args):
     if args.action == "register":
-        site = register_site()
-        print(f"[+] Registered {site['site_id']} events_24h={site.get('events_24h')}")
+        print(register_site())
     elif args.action == "group":
         print(group_report_text())
     else:
@@ -348,8 +334,7 @@ def cmd_rotate(args):
         print(render_rotation_status())
         return
     entry = rotate(force=True)
-    print(f"[+] Rotated SSH={entry['ssh_banner'][:40]}... HTTP={entry['http_server']}")
-    print("    Redeploy to apply banners to live listeners.")
+    print(f"[+] Rotated → {entry.get('http_server')}")
 
 
 def cmd_health(_args):
@@ -357,26 +342,22 @@ def cmd_health(_args):
 
 
 def cmd_packs(_args):
-    print("Industry decoy packs:\n")
     for p in list_packs():
         print(f"  {p['id']:<14} {p['label']}")
-    print("\nUse: mirage init --sector <id>")
 
 
 def cmd_killswitch(args):
     if args.reset:
         guardrails.reset_breaker()
-        print("[+] Circuit breaker reset")
+        print("[+] reset")
         return
     for _ in range(guardrails.CIRCUIT_BREAKER_THRESHOLD + 5):
         guardrails.check_source("killswitch")
-    st = guardrails.status()
-    print("[!] Circuit breaker TRIPPED" if st["circuit_breaker"]["tripped"] else "[?] Trip may have failed")
-    print(f"    {st['circuit_breaker'].get('reason')}")
+    print("[!] breaker tripped")
 
 
 def cmd_stop(_args):
-    print("[*] Stop with Ctrl+C on the deploy process")
+    print("[*] Ctrl+C on deploy process")
 
 
 def cmd_clean(args):
@@ -384,90 +365,32 @@ def cmd_clean(args):
     base = Path(cfg.get("canary_base_dir", ""))
     if base.exists():
         import shutil
-
         shutil.rmtree(base, ignore_errors=True)
-        print("[+] Canaries removed")
-    else:
-        print("[*] Nothing to clean")
-    log_auth("clean", cfg.get("authorization_ref", ""), "canaries cleaned")
+        print("[+] cleaned")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description=f"Mirage {__version__} — TrinTech Digital Defense",
-        epilog="Authorized defensive use only. Complete ROE before client deploy.",
-    )
+    parser = argparse.ArgumentParser(description=f"Mirage {__version__}")
     parser.add_argument("--version", action="version", version=f"Mirage {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("init", help="Initialize with org, ROE ref, sector")
-    p.add_argument("--org")
-    p.add_argument("--auth-ref")
-    p.add_argument("--sector")
-    p.add_argument("--beacon-url")
-    p.set_defaults(func=cmd_init)
-
-    p = sub.add_parser("agree", help="Who gets alerts + report cadence")
-    p.add_argument("--recipients")
-    p.add_argument("--channel", choices=["console", "webhook", "both"])
-    p.add_argument("--cadence", choices=["weekly", "monthly", "per_critical_event"])
-    p.add_argument("--evidence", choices=["on_request", "per_critical", "monthly"])
-    p.add_argument("--webhook")
-    p.set_defaults(func=cmd_agree)
-
-    p = sub.add_parser("checklist")
-    p.set_defaults(func=cmd_checklist)
-
-    p = sub.add_parser("deploy")
-    p.add_argument("--force", action="store_true")
-    p.set_defaults(func=cmd_deploy)
-
-    p = sub.add_parser("status")
-    p.set_defaults(func=cmd_status)
-    p = sub.add_parser("alerts")
-    p.add_argument("--recent", "-r", type=int, default=20)
-    p.set_defaults(func=cmd_alerts)
-
-    p = sub.add_parser("report")
-    p.add_argument("--daily", action="store_true")
-    p.add_argument("--hours", type=int)
-    p.add_argument("--client", action="store_true")
-    p.add_argument("--story", action="store_true")
-    p.set_defaults(func=cmd_report)
-
-    p = sub.add_parser("bait")
-    p.add_argument("--org")
-    p.add_argument("--sector")
-    p.add_argument("--write", action="store_true")
-    p.set_defaults(func=cmd_bait)
-
-    p = sub.add_parser("coverage")
-    p.set_defaults(func=cmd_coverage)
-    p = sub.add_parser("evidence")
-    p.add_argument("--hours", type=int, default=24)
-    p.add_argument("--engagement")
-    p.set_defaults(func=cmd_evidence)
-
-    p = sub.add_parser("mesh")
-    p.add_argument("action", nargs="?", default="status", choices=["status", "register", "group"])
-    p.set_defaults(func=cmd_mesh)
-
-    p = sub.add_parser("rotate")
-    p.add_argument("--status", action="store_true")
-    p.set_defaults(func=cmd_rotate)
-    p = sub.add_parser("health")
-    p.set_defaults(func=cmd_health)
-    p = sub.add_parser("packs")
-    p.set_defaults(func=cmd_packs)
-
-    p = sub.add_parser("killswitch")
-    p.add_argument("--reset", action="store_true")
-    p.set_defaults(func=cmd_killswitch)
-
-    p = sub.add_parser("stop")
-    p.set_defaults(func=cmd_stop)
-    p = sub.add_parser("clean")
-    p.set_defaults(func=cmd_clean)
+    p = sub.add_parser("init"); p.add_argument("--org"); p.add_argument("--auth-ref"); p.add_argument("--sector"); p.add_argument("--beacon-url"); p.set_defaults(func=cmd_init)
+    p = sub.add_parser("agree"); p.add_argument("--recipients"); p.add_argument("--channel", choices=["console", "webhook", "both"]); p.add_argument("--cadence", choices=["weekly", "monthly", "per_critical_event"]); p.add_argument("--evidence", choices=["on_request", "per_critical", "monthly"]); p.add_argument("--webhook"); p.set_defaults(func=cmd_agree)
+    p = sub.add_parser("checklist"); p.set_defaults(func=cmd_checklist)
+    p = sub.add_parser("deploy"); p.add_argument("--force", action="store_true"); p.set_defaults(func=cmd_deploy)
+    p = sub.add_parser("status"); p.set_defaults(func=cmd_status)
+    p = sub.add_parser("alerts"); p.add_argument("--recent", "-r", type=int, default=20); p.set_defaults(func=cmd_alerts)
+    p = sub.add_parser("report"); p.add_argument("--daily", action="store_true"); p.add_argument("--hours", type=int); p.add_argument("--client", action="store_true"); p.add_argument("--story", action="store_true"); p.set_defaults(func=cmd_report)
+    p = sub.add_parser("bait"); p.add_argument("--org"); p.add_argument("--sector"); p.add_argument("--write", action="store_true"); p.set_defaults(func=cmd_bait)
+    p = sub.add_parser("coverage"); p.set_defaults(func=cmd_coverage)
+    p = sub.add_parser("evidence"); p.add_argument("--hours", type=int, default=24); p.add_argument("--engagement"); p.set_defaults(func=cmd_evidence)
+    p = sub.add_parser("mesh"); p.add_argument("action", nargs="?", default="status", choices=["status", "register", "group"]); p.set_defaults(func=cmd_mesh)
+    p = sub.add_parser("rotate"); p.add_argument("--status", action="store_true"); p.set_defaults(func=cmd_rotate)
+    p = sub.add_parser("health"); p.set_defaults(func=cmd_health)
+    p = sub.add_parser("packs"); p.set_defaults(func=cmd_packs)
+    p = sub.add_parser("killswitch"); p.add_argument("--reset", action="store_true"); p.set_defaults(func=cmd_killswitch)
+    p = sub.add_parser("stop"); p.set_defaults(func=cmd_stop)
+    p = sub.add_parser("clean"); p.set_defaults(func=cmd_clean)
 
     args = parser.parse_args()
     args.func(args)
