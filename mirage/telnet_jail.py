@@ -1,8 +1,4 @@
-"""Synthetic Telnet shell — low-interaction command sandbox.
-
-Records every command in memory; never executes on the real OS.
-Pairs with the existing SSH jail for botnet/human payload capture.
-"""
+"""Synthetic Telnet shell — command sandbox (v2.5 guardrails)."""
 
 from __future__ import annotations
 
@@ -11,6 +7,9 @@ import socket
 import threading
 import time
 from typing import Callable, Dict, List, Optional
+
+from . import guardrails
+from .redaction import fingerprint
 
 logger = logging.getLogger("mirage.telnet_jail")
 
@@ -63,7 +62,7 @@ class TelnetJail:
     def __init__(
         self,
         port: int = 2323,
-        listen_addr: str = "0.0.0.0",
+        listen_addr: str = "127.0.0.1",
         session_timeout: int = 180,
         on_event: Optional[Callable] = None,
     ):
@@ -83,9 +82,16 @@ class TelnetJail:
 
     def _session(self, conn: socket.socket, addr):
         source_ip = addr[0]
+        allowed, reason = guardrails.accept_allowed("telnet_jail", source_ip)
+        if not allowed:
+            try:
+                conn.close()
+            except OSError:
+                pass
+            return
         commands: List[str] = []
-        self._emit("telnet_jail_connect", source_ip, {"service": "telnet_jail", "port": self.port})
         try:
+            self._emit("telnet_jail_connect", source_ip, {"service": "telnet_jail", "port": self.port})
             conn.settimeout(self.session_timeout)
             conn.sendall(b"\r\nUbuntu 22.04.3 LTS\r\ndecoy-host login: ")
             user = b""
@@ -102,17 +108,29 @@ class TelnetJail:
                 if not chunk:
                     return
                 pw += chunk
+            # Password discarded after length/fingerprint — never emitted
+            pw_text = pw.decode("utf-8", errors="replace").strip("\r\n")
             self._emit(
                 "telnet_jail_login",
                 source_ip,
-                {"service": "telnet_jail", "username": username, "port": self.port},
+                {
+                    "service": "telnet_jail",
+                    "username": username,
+                    "port": self.port,
+                    "password_present": bool(pw_text),
+                    "password_length": len(pw_text),
+                    "password_fingerprint": fingerprint(pw_text) if pw_text else "",
+                },
             )
+            del pw, pw_text
             conn.sendall(b"\r\nWelcome to Ubuntu 22.04.3 LTS\r\n")
             prompt = f"{username}@decoy-host:~$ ".encode()
             conn.sendall(prompt)
             buf = b""
             start = time.time()
             while time.time() - start < self.session_timeout:
+                if guardrails.listeners_paused():
+                    break
                 try:
                     data = conn.recv(256)
                 except socket.timeout:
@@ -159,15 +177,12 @@ class TelnetJail:
         except OSError:
             pass
         finally:
+            guardrails.session_release("telnet_jail", source_ip)
             if commands:
                 self._emit(
                     "telnet_jail_session_end",
                     source_ip,
-                    {
-                        "service": "telnet_jail",
-                        "commands_count": len(commands),
-                        "commands": commands[:50],
-                    },
+                    {"service": "telnet_jail", "commands_count": len(commands), "commands": commands[:50]},
                 )
             try:
                 conn.close()
@@ -190,6 +205,9 @@ class TelnetJail:
 
         def serve():
             while self._running:
+                if guardrails.listeners_paused():
+                    time.sleep(0.5)
+                    continue
                 try:
                     conn, addr = self._sock.accept()
                     threading.Thread(target=self._session, args=(conn, addr), daemon=True).start()
