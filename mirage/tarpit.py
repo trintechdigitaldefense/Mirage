@@ -1,9 +1,4 @@
-"""TCP Tarpit — hold scanner threads with sub-byte-per-second responses.
-
-Accepts connections on designated ports and drips data slowly so automated
-scanners (Nmap scripts, Masscan follow-ups, brute tools) burn time and sockets.
-Passive only: no outbound traffic, no exploit of the peer.
-"""
+"""TCP Tarpit — hold scanners; accept-time guardrails (v2.5)."""
 
 from __future__ import annotations
 
@@ -13,9 +8,9 @@ import threading
 import time
 from typing import Callable, Dict, List, Optional
 
-logger = logging.getLogger("mirage.tarpit")
+from . import guardrails
 
-# Slow drip payload (looks like a partial SSH/HTTP handshake fragment)
+logger = logging.getLogger("mirage.tarpit")
 DRIP = b"."
 
 
@@ -23,7 +18,7 @@ class TarpitPort:
     def __init__(
         self,
         port: int,
-        listen_addr: str = "0.0.0.0",
+        listen_addr: str = "127.0.0.1",
         drip_interval: float = 2.0,
         max_session_sec: float = 120.0,
         on_event: Optional[Callable] = None,
@@ -39,35 +34,44 @@ class TarpitPort:
 
     def _handle(self, conn: socket.socket, addr):
         source_ip = addr[0]
-        if self.on_event:
+        allowed, reason = guardrails.accept_allowed("tarpit", source_ip)
+        if not allowed:
             try:
-                self.on_event(
-                    event_type="tarpit_hold",
-                    source_ip=source_ip,
-                    details={
-                        "service": "tarpit",
-                        "port": self.port,
-                        "source_port": addr[1],
-                        "drip_interval": self.drip_interval,
-                    },
-                )
-            except Exception:
+                conn.close()
+            except OSError:
                 pass
-        start = time.time()
+            return
         try:
+            if self.on_event:
+                try:
+                    self.on_event(
+                        event_type="tarpit_hold",
+                        source_ip=source_ip,
+                        details={
+                            "service": "tarpit",
+                            "port": self.port,
+                            "source_port": addr[1],
+                            "drip_interval": self.drip_interval,
+                        },
+                    )
+                except Exception:
+                    pass
+            start = time.time()
             conn.settimeout(self.drip_interval + 1.0)
             while self._running and (time.time() - start) < self.max_session_sec:
+                if guardrails.listeners_paused():
+                    break
                 try:
                     conn.sendall(DRIP)
                 except OSError:
                     break
                 time.sleep(self.drip_interval)
                 try:
-                    # Drain any scanner payload without responding quickly
                     conn.recv(256)
                 except (socket.timeout, OSError):
                     pass
         finally:
+            guardrails.session_release("tarpit", source_ip)
             try:
                 conn.close()
             except OSError:
@@ -89,11 +93,12 @@ class TarpitPort:
 
         def serve():
             while self._running:
+                if guardrails.listeners_paused():
+                    time.sleep(0.5)
+                    continue
                 try:
                     conn, addr = self._sock.accept()
-                    threading.Thread(
-                        target=self._handle, args=(conn, addr), daemon=True
-                    ).start()
+                    threading.Thread(target=self._handle, args=(conn, addr), daemon=True).start()
                 except socket.timeout:
                     continue
                 except OSError:
@@ -105,7 +110,7 @@ class TarpitPort:
 
         self._thread = threading.Thread(target=serve, daemon=True)
         self._thread.start()
-        logger.info("Tarpit listening on %s:%d (drip=%.1fs)", self.listen_addr, self.port, self.drip_interval)
+        logger.info("Tarpit on %s:%d", self.listen_addr, self.port)
         return True
 
     def stop(self):
@@ -117,21 +122,14 @@ class TarpitPort:
                 pass
 
     def status(self) -> Dict:
-        return {
-            "name": "tarpit",
-            "port": self.port,
-            "running": self._running,
-            "drip_interval": self.drip_interval,
-        }
+        return {"name": "tarpit", "port": self.port, "running": self._running, "drip_interval": self.drip_interval}
 
 
 class TarpitManager:
-    """Run tarpits on multiple ports (e.g. 2223, 3390, 4451)."""
-
     def __init__(
         self,
         ports: List[int],
-        listen_addr: str = "0.0.0.0",
+        listen_addr: str = "127.0.0.1",
         drip_interval: float = 2.0,
         max_session_sec: float = 120.0,
         on_event: Optional[Callable] = None,
