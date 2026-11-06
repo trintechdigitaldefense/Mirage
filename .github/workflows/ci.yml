@@ -21,21 +21,21 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install -e . || pip install .
-          pip install pytest || true
+          pip install -r requirements.txt
+          pip install -e .
+          pip install pytest
       - name: Compile Python sources
         run: |
-          find . -name "*.py" -not -path "./.venv/*" -not -path "./venv/*" | while read f; do
+          find mirage -name "*.py" | while read f; do
             python -m py_compile "$f" || exit 1
           done
+      - name: Require tests directory
+        run: |
+          test -d tests || { echo "tests/ directory is required"; exit 1; }
+          test -n "$(find tests -name 'test_*.py' | head -1)" || { echo "No test_*.py files"; exit 1; }
       - name: CLI smoke test
         run: |
-          python -m mirage --help || mirage --help || python -c "import mirage; print('import ok')"
-      - name: Run pytest if tests exist
-        run: |
-          if [ -d tests ] || [ -d test ]; then
-            pytest -q
-          else
-            echo "No tests/ directory — compile + CLI smoke passed"
-          fi
+          python -c "import mirage; from mirage.redaction import redact_details; from mirage import guardrails; print(mirage.__version__)"
+          python -m mirage --help
+      - name: Run pytest
+        run: pytest -q tests/
