@@ -1,10 +1,10 @@
 # Mirage — Active Deception Platform
 
-**TrinTech Digital Defense** · **v2.5.0** · **Stage 1 + Stage 2 complete**
+**TrinTech Digital Defense** · **v2.5.x**
 
-Passive deception with credential redaction, accept-time guardrails, loopback-default bind, service registry, and **post-bind health probes**.
+Passive decoys with redaction, guardrails, registry, probes, file-access signals, honeytoken lifecycle, honest confidence, signed evidence, and a **local** operator dashboard.
 
-> Stages 3–7 (file open/read, evidence signing, dashboard, enterprise packaging) remain. SMB stays **low-interaction**. HTTPS stays **disabled** until real TLS.
+> **Not fully production-certified.** Stages 6–7 (multi-tenant hardening, soak tests, signed releases) remain. SMB = low-interaction. HTTPS = disabled until TLS.
 
 ---
 
@@ -16,24 +16,17 @@ curl -fsSL https://raw.githubusercontent.com/trintechdigitaldefense/Mirage/main/
 
 ---
 
-## Stage 2 complete
+## Roadmap status
 
-| Item | Status |
-|------|--------|
-| `accept_allowed` on services, SSH, Telnet, web API, tarpit, DNS, SMB, beacon, cloud | Done |
-| Session caps + circuit pause on accept loops | Done |
-| Service registry RUNNING / FAILED / DISABLED / DEGRADED | Done |
-| Post-bind TCP/UDP probes on deploy + `mirage health` | Done |
-| Honest SMB/beacon register (bind failure → FAILED) | Done |
-| `mirage stop` via PID; safe `clean --yes` | Done |
-
-### Next (Stage 3+)
-
-- File open/read monitoring  
-- Evidence signing  
-- Honest confidence wording  
-- Expanded tests / soak  
-- Dashboard  
+| Stage | Status |
+|-------|--------|
+| **1 Security** | Done — redaction, accept guardrails, bind default, safe clean/stop |
+| **2 Registry** | Done — RUNNING/FAILED/DEGRADED + post-bind probes |
+| **3 Telemetry** | Done — file open/read watcher, token lifecycle, interaction tests |
+| **4 Detection/evidence** | Done — decoy_only confidence, event UID/session, ack/FP, HMAC evidence + verify |
+| **5 Dashboard** | MVP — loopback Bearer-token GET UI (`mirage/dashboard.py`) |
+| **6 Integrations** | Partial — mesh exists; tenant isolation / hardened Sentinel still open |
+| **7 Packaging** | Partial — tests + docs started; soak + signed release open |
 
 ---
 
@@ -41,10 +34,14 @@ curl -fsSL https://raw.githubusercontent.com/trintechdigitaldefense/Mirage/main/
 
 ```bash
 mirage init --org Client --auth-ref ROE-2026-001 --sector clinic
-mirage deploy    # prints probe OK/FAIL per port
-mirage health
-mirage stop
+mirage deploy
+mirage tokens
+mirage evidence
+mirage evidence --verify ~/.mirage/evidence/<bundle>.zip
+mirage ack --list
 pytest -q tests/
 ```
+
+See `docs/EVIDENCE_LIMITATIONS.md`, `docs/STAGE3_TELEMETRY.md`, `docs/CHANGELOG.md`.
 
 *Defend. Detect. Dominate.*
