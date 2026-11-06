@@ -10,7 +10,10 @@ a secret, and a non-reversible fingerprint for correlation — never the secret.
 from __future__ import annotations
 
 import hashlib
+import hmac
+import os
 import re
+import secrets
 from typing import Any, Dict, List, Optional, Set
 
 # Keys whose values are always redacted (case-insensitive match on key)
@@ -50,12 +53,43 @@ _SECRET_PATTERNS = [
 REDACTED = "[REDACTED]"
 
 
-def fingerprint(value: str, *, salt: str = "mirage-decoy") -> str:
-    """Non-reversible short fingerprint for correlation (not a password hash for auth)."""
+def _fingerprint_key() -> bytes:
+    """Load or atomically create a per-install HMAC key for secret fingerprints."""
+    configured = os.environ.get("MIRAGE_REDACTION_KEY")
+    if configured:
+        return configured.encode("utf-8")
+
+    from .config import ensure_data_dir, load_config
+
+    key_dir = ensure_data_dir(load_config()) / "keys"
+    key_dir.mkdir(parents=True, exist_ok=True)
+    key_path = key_dir / "redaction_hmac.key"
+    try:
+        with key_path.open("xb") as stream:
+            stream.write(secrets.token_bytes(32))
+    except FileExistsError:
+        pass
+    try:
+        os.chmod(key_path, 0o600)
+    except OSError:
+        pass
+    key = key_path.read_bytes()
+    if len(key) < 32:
+        raise RuntimeError("Mirage redaction HMAC key is invalid or truncated")
+    return key
+
+
+def fingerprint(value: str, *, salt: Optional[str] = None) -> str:
+    """Return a keyed, short correlation fingerprint; never use this for authentication."""
     if not value:
         return ""
-    h = hashlib.sha256(f"{salt}:{value}".encode("utf-8", errors="replace")).hexdigest()
-    return h[:12]
+    # Keep explicit salt support for callers relying on the legacy API. Normal
+    # redaction always uses the protected per-install key instead.
+    key = salt.encode("utf-8") if salt is not None else _fingerprint_key()
+    digest = hmac.new(
+        key, value.encode("utf-8", errors="replace"), hashlib.sha256
+    ).hexdigest()
+    return digest[:12]
 
 
 def _redact_string(s: str) -> str:
