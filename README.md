@@ -1,10 +1,10 @@
 # Mirage — Active Deception Platform
 
-**TrinTech Digital Defense** · **v2.5.0** (security & reliability hardening)
+**TrinTech Digital Defense** · **v2.5.0** (Stage 1 complete · Stage 2 registry)
 
-Passive deception: fake services, SSH/Telnet sandboxes, web API decoys, canaries, tarpits, DNS canaries — with **credential redaction**, accept-time guardrails, and loopback-default bind.
+Passive deception with **credential redaction**, accept-time guardrails, loopback-default bind, and a **service registry** that reports real RUNNING/FAILED state.
 
-> **Not production-ready end-to-end yet.** Stage 1 critical defects are being closed. Do not market as court-certified evidence or full SMB/HTTPS protocol fidelity until Stages 2–4 complete.
+> Still **not** full production certification. HTTPS TLS, file open/read monitoring, evidence signing, and honest confidence scoring remain on the roadmap.
 
 ---
 
@@ -12,37 +12,46 @@ Passive deception: fake services, SSH/Telnet sandboxes, web API decoys, canaries
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/trintechdigitaldefense/Mirage/main/start.sh | bash -s -- upgrade
+# dirty tree? FORCE=1 bash start.sh upgrade
 ```
 
-- **Does not** delete `~/.mirage` (config, events, evidence)
-- **Refuses** `git reset --hard` if the working tree is dirty unless `FORCE=1`
-- Installs package; preserves operator data
-
-```bash
-FORCE=1 bash start.sh upgrade   # only if you accept discarding local uncommitted code changes
-```
+`~/.mirage` (config, events, evidence) is **never** deleted by upgrade.
 
 ---
 
-## v2.5 Stage 1 — critical security (this release)
+## Stage 1 — critical security (done)
 
-| Fix | Behaviour |
-|-----|-----------|
-| **Credential redaction** | `mirage/redaction.py` — passwords/tokens never written to DB, console, webhook, or SIEM; fingerprint only |
-| **Guardrails at accept** | `accept_allowed()` — rate limit, session caps, circuit breaker **pauses listeners** |
-| **Default bind** | `127.0.0.1` — set `allow_external_bind: true` + `listen_address: 0.0.0.0` only under ROE |
-| **HTTPS** | **Disabled** by default (`https_enabled: false`) until real TLS exists |
-| **Safe upgrade** | No silent hard-reset; data dir preserved |
-| **DB** | Init-once, indexes, retention hook, chmod 600, redact on write |
-| **CI** | Mandatory `tests/`; pytest must pass |
+| Item | Status |
+|------|--------|
+| Central redaction (`redaction.py`) | Done — DB / console / webhook / SIEM |
+| Source-level no plaintext password (SSH / Telnet / HTTP / web API) | Done |
+| `accept_allowed` on services, tarpit, web API, telnet, SSH jail | Done |
+| Circuit breaker **pauses** accept loops | Done |
+| Default bind `127.0.0.1` + `allow_external_bind` | Done |
+| HTTPS disabled until real TLS | Done |
+| Safe `start.sh` upgrade | Done |
+| DB init-once, indexes, retention, chmod | Done |
+| Safe `mirage clean --yes` (path-jailed) | Done |
+| `mirage stop` via `~/.mirage/mirage.pid` | Done |
+| Mandatory pytest CI | Done |
 
-### Remaining Stage 1 / 2 work
+## Stage 2 — service registry (done)
 
-- Wire `accept_allowed` into every listener accept loop
-- Safe `mirage clean` path validation + real `mirage stop`
-- File **open/read** monitoring (not only mtime)
-- Evidence signing (not only SHA-256 next to the bundle)
-- Honest confidence scoring (decoy login ≠ real account compromise)
+| Item | Status |
+|------|--------|
+| `mirage/registry.py` | Done |
+| Deploy registers each listener RUNNING/FAILED/DISABLED | Done |
+| Deploy summary shows failed components (no false “all healthy”) | Done |
+| `mirage health` includes registry rows | Done |
+| `REGISTRY.stop_all` on shutdown | Done |
+
+### Still open
+
+- File **open/read** monitoring (beyond mtime)
+- Evidence **signing** (not only local SHA-256)
+- Detection confidence: decoy login ≠ real account compromise
+- Optional TLS for HTTPS decoy
+- Full SMB protocol (currently low-interaction)
 
 ---
 
@@ -50,23 +59,24 @@ FORCE=1 bash start.sh upgrade   # only if you accept discarding local uncommitte
 
 ```bash
 mirage init --org "Client" --auth-ref ROE-2026-001 --sector clinic
-# Optional external exposure (ROE required):
-# edit ~/.mirage/config.json → allow_external_bind true, listen_address 0.0.0.0
-mirage deploy
+mirage deploy          # binds 127.0.0.1 by default
+mirage status
+mirage health
 curl -s http://127.0.0.1:8081/.env
-mirage alerts
+mirage stop            # SIGTERM to deploy PID
+mirage clean --yes     # decoys only; never events/evidence
 pytest -q tests/
 ```
 
-Default ports stay non-production: SSH **2222**, Telnet **2323**, Web API **8081**, SMB **4450**, DNS canary **5353**.
+External bind (ROE required): set `allow_external_bind: true` and `listen_address: "0.0.0.0"` in `~/.mirage/config.json`.
 
 ---
 
 ## Doctrine
 
 - Passiveception is **passive observation** (no attack-back, no relay).
-- Submitted secrets to decoys are **telemetry events**, not trophies — **redacted**.
+- Submitted secrets are **redacted** (fingerprint only).
 - Circuit breaker trip → listeners pause until `mirage killswitch --reset`.
-- Firewall DROP via Sentinel is **off** unless ROE enables `sentinel_firewall_drop`.
+- SMB is **low-interaction**, not a full protocol server.
 
 *Defend. Detect. Dominate.*
