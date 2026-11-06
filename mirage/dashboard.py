@@ -1,7 +1,8 @@
 """Minimal authenticated operator dashboard (Stage 5 MVP).
 
-Binds to 127.0.0.1 only. Token auth via MIRAGE_DASH_TOKEN or config dashboard_token.
-Not a full SPA — read-only HTML status for local operators.
+Binds to loopback only. Authentication is via an Authorization: Bearer header;
+tokens are never accepted in URLs, where they could leak through logs/history.
+This is a read-only local operator view, not a full SPA.
 """
 
 from __future__ import annotations
@@ -13,7 +14,6 @@ import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Optional
-from urllib.parse import parse_qs, urlparse
 
 from .config import load_config, ensure_data_dir
 from .db import get_all_events
@@ -27,19 +27,19 @@ logger = logging.getLogger("mirage.dashboard")
 
 def _token() -> str:
     cfg = load_config()
-    t = cfg.get("dashboard_token") or os.environ.get("MIRAGE_DASH_TOKEN") or ""
-    if not t:
+    token = cfg.get("dashboard_token") or os.environ.get("MIRAGE_DASH_TOKEN") or ""
+    if not token:
         path = ensure_data_dir() / "dashboard_token.txt"
         if path.exists():
-            t = path.read_text(encoding="utf-8").strip()
+            token = path.read_text(encoding="utf-8").strip()
         else:
-            t = secrets.token_urlsafe(24)
-            path.write_text(t + "\n", encoding="utf-8")
-            try:
-                os.chmod(path, 0o600)
-            except OSError:
-                pass
-    return t
+            token = secrets.token_urlsafe(32)
+            path.write_text(token + "\n", encoding="utf-8")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    return token
 
 
 class Dashboard:
@@ -48,20 +48,22 @@ class Dashboard:
         self.listen_addr = listen_addr
         self._httpd: Optional[HTTPServer] = None
         self._running = False
+        self._thread: Optional[threading.Thread] = None
 
     def _page(self) -> bytes:
         events = get_all_events(limit=15)
         rows = "".join(
-            f"<tr><td>{html.escape(str(e.get('timestamp','')))}</td>"
-            f"<td>{html.escape(str(e.get('event_type','')))}</td>"
-            f"<td>{html.escape(str(e.get('source_ip','')))}</td></tr>"
-            for e in events
+            f"<tr><td>{html.escape(str(event.get('timestamp', '')))}</td>"
+            f"<td>{html.escape(str(event.get('event_type', '')))}</td>"
+            f"<td>{html.escape(str(event.get('source_ip', '')))}</td></tr>"
+            for event in events
         )
-        reg = "".join(
-            f"<li>{html.escape(r.get('state','?'))} {html.escape(r.get('name',''))} :{r.get('port')}</li>"
-            for r in (REGISTRY.status_list() or [])
+        registry_rows = "".join(
+            f"<li>{html.escape(row.get('state', '?'))} "
+            f"{html.escape(row.get('name', ''))} :{row.get('port')}</li>"
+            for row in (REGISTRY.status_list() or [])
         )
-        tok = lifecycle_summary()
+        token_summary = lifecycle_summary()
         body = f"""<!DOCTYPE html><html><head><title>Mirage Operator</title>
 <style>body{{font-family:system-ui;margin:1.5rem;background:#0b1220;color:#e8eefc}}
  table{{border-collapse:collapse;width:100%}} td,th{{border:1px solid #334;padding:6px}}
@@ -69,8 +71,8 @@ class Dashboard:
 <h1>Mirage Operator (local)</h1>
 <p>Authenticated view · bind {html.escape(self.listen_addr)}:{self.port}</p>
 <h2>Health</h2><pre>{html.escape(health_report())}</pre>
-<h2>Registry</h2><ul>{reg or '<li>none (deploy not in this process)</li>'}</ul>
-<h2>Tokens</h2><pre>{html.escape(str(tok))}</pre>
+<h2>Registry</h2><ul>{registry_rows or '<li>none (deploy not in this process)</li>'}</ul>
+<h2>Tokens</h2><pre>{html.escape(str(token_summary))}</pre>
 <h2>Recent events</h2>
 <table><tr><th>Time</th><th>Type</th><th>Source</th></tr>{rows or '<tr><td colspan=3>none</td></tr>'}</table>
 <p><small>Stage 5 MVP — no unauthenticated write APIs. CSRF N/A (GET-only).</small></p>
@@ -81,47 +83,52 @@ class Dashboard:
         outer = self
         expected = _token()
 
-        class H(BaseHTTPRequestHandler):
+        class Handler(BaseHTTPRequestHandler):
             def log_message(self, fmt, *args):
                 logger.debug("dash: " + fmt, *args)
 
             def do_GET(self):
                 if guardrails.listeners_paused():
                     self.send_response(503)
+                    self.send_header("Cache-Control", "no-store")
                     self.end_headers()
                     return
-                auth = self.headers.get("Authorization") or ""
-                q = parse_qs(urlparse(self.path).query)
+
+                authorization = self.headers.get("Authorization") or ""
                 token = ""
-                if auth.lower().startswith("bearer "):
-                    token = auth.split(" ", 1)[1].strip()
-                elif q.get("token"):
-                    token = q["token"][0]
+                if authorization.lower().startswith("bearer "):
+                    token = authorization.split(" ", 1)[1].strip()
+
                 if not token or not secrets.compare_digest(token, expected):
                     self.send_response(401)
                     self.send_header("WWW-Authenticate", "Bearer")
+                    self.send_header("Cache-Control", "no-store")
                     self.end_headers()
                     self.wfile.write(b"unauthorized")
                     return
+
                 body = outer._page()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("X-Frame-Options", "DENY")
+                self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(body)
 
             def do_POST(self):
                 self.send_response(405)
+                self.send_header("Allow", "GET")
+                self.send_header("Cache-Control", "no-store")
                 self.end_headers()
 
-        return H
+        return Handler
 
     def start(self) -> bool:
         if self._running:
             return True
-        if self.listen_addr not in ("127.0.0.1", "localhost", "::1"):
+        if self.listen_addr not in ("127.0.0.1", "localhost"):
             logger.error("Dashboard refuses non-loopback bind")
             return False
         try:
@@ -133,11 +140,16 @@ class Dashboard:
                 while self._running:
                     self._httpd.handle_request()
 
-            threading.Thread(target=serve, daemon=True).start()
-            logger.info("Dashboard on http://%s:%d (Bearer token required)", self.listen_addr, self.port)
+            self._thread = threading.Thread(target=serve, daemon=True)
+            self._thread.start()
+            logger.info(
+                "Dashboard on http://%s:%d (Bearer token required)",
+                self.listen_addr,
+                self.port,
+            )
             return True
-        except OSError as e:
-            logger.error("Dashboard bind failed: %s", e)
+        except OSError as exc:
+            logger.error("Dashboard bind failed: %s", exc)
             return False
 
     def stop(self):
@@ -147,3 +159,5 @@ class Dashboard:
                 self._httpd.server_close()
             except Exception:
                 pass
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.5)

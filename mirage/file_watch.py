@@ -1,21 +1,15 @@
-"""File access monitoring beyond mtime-only (Stage 3 item 6).
+"""File access monitoring using metadata polling and change-triggered hashing.
 
-Detects:
-- content change (hash)
-- size change
-- atime advance when available (read/open on many systems)
-- delete / recreate
-- optional inotify IN_OPEN / IN_ACCESS when pyinotify or inotify_simple is present
-
-Honest limitation: pure user-space polling cannot prove open() on all filesystems
-(noatime mounts). We record signal quality in each event.
+The watcher never reads an unchanged file during a poll. This matters because
+reading a file can itself advance atime and create a false canary_opened event.
+Polling cannot prove every open on every filesystem (for example noatime
+mounts); signal_quality records the evidence source.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import threading
 import time
 from pathlib import Path
@@ -25,31 +19,49 @@ logger = logging.getLogger("mirage.file_watch")
 
 
 def _file_hash(path: Path, max_bytes: int = 65536) -> str:
-    h = hashlib.sha256()
+    digest = hashlib.sha256()
     try:
-        with open(path, "rb") as f:
-            h.update(f.read(max_bytes))
-        return h.hexdigest()[:16]
+        with open(path, "rb") as stream:
+            digest.update(stream.read(max_bytes))
+        return digest.hexdigest()[:16]
     except OSError:
         return ""
 
 
-def _stat_snapshot(path: Path) -> Optional[Dict[str, Any]]:
+def _stat_snapshot(
+    path: Path, previous: Optional[Dict[str, Any]] = None
+) -> Optional[Dict[str, Any]]:
+    """Read metadata cheaply; hash only on first sight or metadata changes."""
     try:
-        st = path.stat()
+        stat = path.stat()
+        changed = (
+            previous is None
+            or stat.st_mtime != previous.get("mtime")
+            or stat.st_size != previous.get("size")
+            or getattr(stat, "st_ino", 0) != previous.get("inode", 0)
+        )
+        file_hash = (
+            _file_hash(path)
+            if changed
+            else str(previous.get("hash") or "")
+        )
+        # Hashing can affect atime. Capture metadata again so our own read
+        # does not get misreported as an external open on the next poll.
+        if changed:
+            stat = path.stat()
         return {
-            "mtime": st.st_mtime,
-            "atime": st.st_atime,
-            "size": st.st_size,
-            "inode": getattr(st, "st_ino", 0),
-            "hash": _file_hash(path),
+            "mtime": stat.st_mtime,
+            "atime": stat.st_atime,
+            "size": stat.st_size,
+            "inode": getattr(stat, "st_ino", 0),
+            "hash": file_hash,
         }
     except OSError:
         return None
 
 
 class FileAccessWatcher:
-    """Watch a set of paths for open/read/modify/delete signals."""
+    """Watch configured paths for metadata, content, and access-time signals."""
 
     def __init__(
         self,
@@ -57,12 +69,13 @@ class FileAccessWatcher:
         on_event: Optional[Callable] = None,
         poll_interval: float = 2.0,
     ):
-        self.paths = [str(p) for p in paths]
+        self.paths = [str(path) for path in paths]
         self.on_event = on_event
         self.poll_interval = max(0.5, float(poll_interval))
         self._snap: Dict[str, Dict[str, Any]] = {}
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        # No native inotify backend is currently implemented.
         self._inotify = False
 
     def _emit(self, event_type: str, path: str, details: dict):
@@ -79,33 +92,38 @@ class FileAccessWatcher:
                     **details,
                 },
             )
-        except Exception as e:
-            logger.debug("file_watch emit failed: %s", e)
+        except Exception as exc:
+            logger.debug("file_watch emit failed: %s", exc)
 
     def seed(self):
-        for p in self.paths:
-            snap = _stat_snapshot(Path(p))
-            if snap:
-                self._snap[p] = snap
+        for configured_path in self.paths:
+            snapshot = _stat_snapshot(Path(configured_path))
+            if snapshot:
+                self._snap[configured_path] = snapshot
 
     def _diff(self, path: str, old: Dict[str, Any], new: Dict[str, Any]):
-        # delete handled separately
-        if new["hash"] != old.get("hash") or new["size"] != old.get("size"):
+        replaced = new.get("inode") != old.get("inode")
+        if (
+            replaced
+            or new["hash"] != old.get("hash")
+            or new["size"] != old.get("size")
+            or new["mtime"] != old.get("mtime")
+        ):
             self._emit(
                 "canary_modified",
                 path,
                 {
-                    "reason": "content_or_size",
+                    "reason": "file_replaced" if replaced else "content_or_metadata",
                     "old_size": old.get("size"),
                     "new_size": new["size"],
                     "old_hash": old.get("hash"),
-                    "new_hash": new["hash"],
+                    "new_hash": new.get("hash"),
                     "signal_quality": "content_hash",
                 },
             )
             return
-        # atime advanced without mtime/hash change → likely read/open
-        if new["atime"] > old.get("atime", 0) + 0.01 and new["mtime"] == old.get("mtime"):
+
+        if new["atime"] > old.get("atime", 0) + 0.01:
             self._emit(
                 "canary_opened",
                 path,
@@ -113,36 +131,38 @@ class FileAccessWatcher:
                     "reason": "atime_advance",
                     "atime": new["atime"],
                     "signal_quality": "atime",
-                    "note": "Filesystem reported access time change without content change",
+                    "note": "Filesystem reported access-time change without content change",
                 },
             )
 
     def poll_once(self):
-        for p in list(self.paths):
-            path = Path(p)
-            old = self._snap.get(p)
+        for configured_path in list(self.paths):
+            path = Path(configured_path)
+            old = self._snap.get(configured_path)
             if not path.exists():
                 if old is not None:
                     self._emit(
                         "canary_deleted",
-                        p,
+                        configured_path,
                         {"reason": "missing", "signal_quality": "existence"},
                     )
-                    self._snap.pop(p, None)
+                    self._snap.pop(configured_path, None)
                 continue
-            new = _stat_snapshot(path)
+
+            new = _stat_snapshot(path, previous=old)
             if not new:
                 continue
             if old is None:
-                self._snap[p] = new
+                self._snap[configured_path] = new
                 self._emit(
                     "canary_created",
-                    p,
+                    configured_path,
                     {"reason": "appeared", "signal_quality": "existence"},
                 )
                 continue
-            self._diff(p, old, new)
-            self._snap[p] = new
+
+            self._diff(configured_path, old, new)
+            self._snap[configured_path] = new
 
     def start(self) -> bool:
         if self._running:
@@ -154,17 +174,23 @@ class FileAccessWatcher:
             while self._running:
                 try:
                     self.poll_once()
-                except Exception as e:
-                    logger.debug("file_watch poll: %s", e)
+                except Exception as exc:
+                    logger.exception("file_watch poll failed: %s", exc)
                 time.sleep(self.poll_interval)
 
         self._thread = threading.Thread(target=loop, daemon=True)
         self._thread.start()
-        logger.info("FileAccessWatcher on %d paths (poll=%.1fs)", len(self.paths), self.poll_interval)
+        logger.info(
+            "FileAccessWatcher on %d paths (poll=%.1fs)",
+            len(self.paths),
+            self.poll_interval,
+        )
         return True
 
     def stop(self):
         self._running = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=max(1.0, self.poll_interval + 0.5))
 
     def status(self) -> Dict[str, Any]:
         return {
@@ -172,5 +198,5 @@ class FileAccessWatcher:
             "paths": len(self.paths),
             "running": self._running,
             "inotify": self._inotify,
-            "mode": "poll+atime+hash",
+            "mode": "metadata-poll+change-triggered-hash",
         }

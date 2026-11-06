@@ -34,6 +34,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "telnet_jail_enabled": True,
     "telnet_jail_port": 2323,
     "web_api_enabled": True,
+    "dashboard_enabled": False,
+    "dashboard_port": 8787,
     "web_api_port": 8081,
     "smb_enabled": True,
     "smb_port": 4450,

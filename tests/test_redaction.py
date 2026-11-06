@@ -51,3 +51,13 @@ def test_nested_token_redacted():
     safe = redact_details(details)
     blob = json.dumps(safe)
     assert "abc.def.ghi" not in blob
+
+def test_fingerprint_uses_install_key(monkeypatch):
+    from mirage import redaction
+
+    monkeypatch.setattr(redaction, "_fingerprint_key", lambda: b"a" * 32)
+    first = redaction.fingerprint("same-secret")
+    monkeypatch.setattr(redaction, "_fingerprint_key", lambda: b"b" * 32)
+    second = redaction.fingerprint("same-secret")
+
+    assert first != second

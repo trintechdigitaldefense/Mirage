@@ -29,6 +29,8 @@ jobs:
           find mirage -name "*.py" | while read f; do
             python -m py_compile "$f" || exit 1
           done
+      - name: Validate installer shell syntax
+        run: bash -n start.sh
       - name: Require tests directory
         run: |
           test -d tests || { echo "tests/ directory is required"; exit 1; }

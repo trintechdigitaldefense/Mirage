@@ -20,7 +20,7 @@ resolve_root() {
   echo "${HOME}/mirage"
 }
 
-ROOT="$(resolve_root)"
+ROOT="${MIRAGE_HOME:-$(resolve_root)}"
 CMD="${1:-menu}"
 shift || true
 
@@ -36,20 +36,20 @@ need_cmd() {
 ensure_repo() {
   need_cmd git
   need_cmd python3
-  if [[ ! -d "${ROOT}/.git" ]]; then
+  if [[ -e "${ROOT}" ]]; then
+    if ! git -C "${ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      err "Refusing to replace existing non-Git directory: ${ROOT}"
+      err "Move it yourself or choose another path with MIRAGE_HOME=/path/to/mirage"
+      exit 1
+    fi
+    if [[ ! -f "${ROOT}/mirage/cli.py" ]]; then
+      err "The Git directory at ${ROOT} is not a Mirage checkout; refusing to modify it"
+      exit 1
+    fi
+  else
     log "Cloning Mirage into ${ROOT}..."
     mkdir -p "$(dirname "${ROOT}")"
-    if [[ -d "${ROOT}" ]] && [[ -n "$(ls -A "${ROOT}" 2>/dev/null || true)" ]]; then
-      if [[ ! -f "${ROOT}/mirage/cli.py" ]]; then
-        git clone --branch "${BRANCH}" "${REPO_URL}" "${ROOT}.git-new"
-        rm -rf "${ROOT}"
-        mv "${ROOT}.git-new" "${ROOT}"
-      else
-        warn "Keeping existing tree"
-      fi
-    else
-      git clone --branch "${BRANCH}" "${REPO_URL}" "${ROOT}"
-    fi
+    git clone --branch "${BRANCH}" "${REPO_URL}" "${ROOT}"
   fi
   cd "${ROOT}"
 }
@@ -79,10 +79,11 @@ cmd_upgrade() {
     git reset --hard "origin/${BRANCH}"
   else
     if git merge-base --is-ancestor HEAD "origin/${BRANCH}" 2>/dev/null; then
-      git merge --ff-only "origin/${BRANCH}" || git pull --ff-only origin "${BRANCH}"
+      git merge --ff-only "origin/${BRANCH}"
     else
-      warn "Non-fast-forward; using reset. Set FORCE=1 to allow if dirty."
-      git reset --hard "origin/${BRANCH}"
+      err "Local branch has commits not present on origin; refusing to discard local history."
+      err "Merge/rebase manually, or re-run with FORCE=1 to explicitly reset to origin/${BRANCH}."
+      exit 1
     fi
   fi
   ok "Code ${PREV} → $(git rev-parse --short HEAD)"
