@@ -223,21 +223,73 @@ def export_evidence(
 
 
 def verify_evidence_zip(zip_path: str) -> Tuple[bool, str]:
-    """Verify SHA-256 + HMAC of events.json inside a bundle."""
+    """Verify bundle structure, manifest integrity, event metadata, SHA-256 and HMAC."""
     path = Path(zip_path)
     if not path.exists():
         return False, "file not found"
     try:
-        with zipfile.ZipFile(path, "r") as zf:
-            events = zf.read("events.json")
-            manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
-            sig = zf.read("signature.hmac").decode("utf-8").strip()
-        sha = _sha256_bytes(events)
-        file_meta = (manifest.get("files") or [{}])[0]
-        if file_meta.get("sha256") and file_meta["sha256"] != sha:
-            return False, "SHA-256 mismatch vs manifest"
-        if not verify_signature(events, sig):
+        with zipfile.ZipFile(path, "r") as archive:
+            names = archive.namelist()
+            required = {"events.json", "manifest.json", "signature.hmac"}
+            if not required.issubset(set(names)):
+                return False, "required evidence files missing"
+            if len(names) != len(set(names)):
+                return False, "duplicate archive entry names"
+            if archive.getinfo("events.json").file_size > 50 * 1024 * 1024:
+                return False, "events.json exceeds verification size limit"
+            if archive.getinfo("manifest.json").file_size > 1024 * 1024:
+                return False, "manifest.json exceeds verification size limit"
+            events_bytes = archive.read("events.json")
+            manifest_bytes = archive.read("manifest.json")
+            signature_file = archive.read("signature.hmac")
+
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+        events_body = json.loads(events_bytes.decode("utf-8"))
+        signature = signature_file.decode("utf-8").strip()
+
+        if manifest.get("format") != "TrinTech-Evidence-Manifest-v2":
+            return False, "unsupported evidence manifest format"
+        files = manifest.get("files")
+        if not isinstance(files, list) or len(files) != 1:
+            return False, "invalid manifest files list"
+        file_meta = files[0]
+        if file_meta.get("name") != "events.json":
+            return False, "manifest does not identify events.json"
+
+        expected_manifest_hash = manifest.get("manifest_sha256") or ""
+        manifest_for_hash = dict(manifest)
+        manifest_for_hash.pop("manifest_sha256", None)
+        actual_manifest_hash = _sha256_text(
+            json.dumps(manifest_for_hash, indent=2, sort_keys=True)
+        )
+        if not expected_manifest_hash or not hmac.compare_digest(
+            expected_manifest_hash, actual_manifest_hash
+        ):
+            return False, "manifest SHA-256 mismatch"
+
+        actual_events_hash = _sha256_bytes(events_bytes)
+        if file_meta.get("bytes") != len(events_bytes):
+            return False, "events.json byte-length mismatch"
+        if not file_meta.get("sha256") or not hmac.compare_digest(
+            str(file_meta["sha256"]), actual_events_hash
+        ):
+            return False, "events.json SHA-256 mismatch"
+        manifest_signature = str(file_meta.get("hmac_sha256") or "")
+        if not manifest_signature or not hmac.compare_digest(
+            manifest_signature, signature
+        ):
+            return False, "signature file does not match manifest"
+        if not verify_signature(events_bytes, signature):
             return False, "HMAC signature invalid (wrong key or tampered body)"
-        return True, "OK — SHA-256 and HMAC verified"
-    except Exception as e:
-        return False, str(e)[:200]
+
+        if events_body.get("format") != "TrinTech-Mirage-Evidence-v2":
+            return False, "unsupported events document format"
+        if events_body.get("event_count") != len(events_body.get("events") or []):
+            return False, "event_count does not match events list"
+        for field in ("engagement_id", "organization", "authorization_ref", "generated_at"):
+            if events_body.get(field) != manifest.get(field):
+                return False, f"manifest metadata mismatch: {field}"
+
+        return True, "OK — manifest, SHA-256 and HMAC verified"
+    except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
+        return False, str(exc)[:200]
