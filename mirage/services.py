@@ -1,4 +1,4 @@
-"""Realistic fake network services for Mirage deception platform (v2.3)."""
+"""Realistic fake network services for Mirage (v2.5 — guardrails + no secret storage)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,9 @@ import socket
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
+
+from . import guardrails
+from .redaction import fingerprint
 
 logger = logging.getLogger("mirage.services")
 
@@ -22,10 +25,7 @@ MYSQL_GREETING = (
 RDP_BANNER = b"\x03\x00\x00\x13\x0e\xd0\x00\x00\x12\x34\x00\x02\x0f\x08\x00\x02\x00\x00\x00"
 REDIS_PONG = b"+PONG\r\n"
 REDIS_ERR = b"-ERR invalid password\r\n"
-POSTGRES_AUTH = (
-    # Startup failure / password required style bytes (simplified)
-    b"R\x00\x00\x00\x08\x00\x00\x00\x03"  # AuthenticationCleartextPassword-ish
-)
+POSTGRES_AUTH = b"R\x00\x00\x00\x08\x00\x00\x00\x03"
 ELASTIC_BANNER = (
     b'{"name":"decoy-node-01","cluster_name":"elasticsearch",'
     b'"version":{"number":"7.17.9","build_flavor":"default"},'
@@ -75,19 +75,21 @@ def _load_cosmetics():
 
 
 def _parse_http_credentials(data: bytes) -> Dict[str, str]:
+    """Extract username only; password length/fingerprint — never keep plaintext."""
     text = data.decode("utf-8", errors="replace")
     out: Dict[str, str] = {}
-    if "username=" in text or "user=" in text or "password=" in text or "pass=" in text:
-        # crude form parse
-        body = text.split("\r\n\r\n", 1)[-1] if "\r\n\r\n" in text else text
-        for part in body.replace("&", " ").split():
-            if "=" in part:
-                k, _, v = part.partition("=")
-                k = k.strip().lower()
-                if k in ("user", "username", "login", "email"):
-                    out["username"] = v[:80]
-                if k in ("pass", "password", "passwd"):
-                    out["password"] = v[:80]
+    body = text.split("\r\n\r\n", 1)[-1] if "\r\n\r\n" in text else text
+    for part in body.replace("&", " ").split():
+        if "=" not in part:
+            continue
+        k, _, v = part.partition("=")
+        k = k.strip().lower()
+        if k in ("user", "username", "login", "email"):
+            out["username"] = v[:80]
+        if k in ("pass", "password", "passwd") and v:
+            out["password_present"] = "true"
+            out["password_length"] = str(len(v))
+            out["password_fingerprint"] = fingerprint(v)
     return out
 
 
@@ -97,9 +99,9 @@ class FakeService:
         name: str,
         port: int,
         banner: bytes,
-        listen_addr: str = "0.0.0.0",
+        listen_addr: str = "127.0.0.1",
         on_connect: Optional[Callable] = None,
-        mode: str = "banner",  # banner | http_admin | redis | postgres | elastic
+        mode: str = "banner",
     ):
         self.name = name
         self.port = port
@@ -120,14 +122,21 @@ class FakeService:
 
     def _handle(self, conn: socket.socket, addr):
         source_ip = addr[0]
-        # Refresh banner per connection if mutator says so
-        _load_cosmetics()
-        self._emit(
-            f"decoy_{self.name}_connect",
-            source_ip,
-            {"service": self.name, "port": self.port, "source_port": addr[1]},
-        )
+        allowed, reason = guardrails.accept_allowed(self.name, source_ip)
+        if not allowed:
+            logger.debug("Reject %s from %s: %s", self.name, source_ip, reason)
+            try:
+                conn.close()
+            except OSError:
+                pass
+            return
         try:
+            _load_cosmetics()
+            self._emit(
+                f"decoy_{self.name}_connect",
+                source_ip,
+                {"service": self.name, "port": self.port, "source_port": addr[1]},
+            )
             conn.settimeout(8.0)
             if self.mode == "http_admin":
                 self._handle_http(conn, source_ip)
@@ -161,7 +170,6 @@ class FakeService:
                                 "service": self.name,
                                 "port": self.port,
                                 "bytes_received": len(data),
-                                "preview": data[:80].decode("utf-8", errors="replace"),
                             },
                         )
                 except (socket.timeout, OSError):
@@ -170,6 +178,7 @@ class FakeService:
         except OSError:
             pass
         finally:
+            guardrails.session_release(self.name, source_ip)
             try:
                 conn.close()
             except OSError:
@@ -188,14 +197,9 @@ class FakeService:
             self._emit(
                 "decoy_http_data",
                 source_ip,
-                {
-                    "service": "http",
-                    "port": self.port,
-                    "bytes_received": len(data),
-                    "preview": data[:100].decode("utf-8", errors="replace"),
-                },
+                {"service": "http", "port": self.port, "bytes_received": len(data)},
             )
-        if creds:
+        if creds.get("password_present") or creds.get("username"):
             self._emit(
                 "http_login_capture",
                 source_ip,
@@ -203,8 +207,10 @@ class FakeService:
                     "service": "http_admin",
                     "port": self.port,
                     "username": creds.get("username", ""),
-                    "password": creds.get("password", ""),
-                    "note": "submitted to decoy admin portal",
+                    "password_present": True,
+                    "password_length": int(creds.get("password_length") or 0),
+                    "password_fingerprint": creds.get("password_fingerprint", ""),
+                    "note": "submitted to decoy admin portal — secret not stored",
                 },
             )
             conn.sendall(_http_error_500(server))
@@ -218,27 +224,21 @@ class FakeService:
             ver = get_redis_version()
         except Exception:
             ver = "7.0.12"
-        # Minimal: respond to anything with AUTH error / PONG
         try:
             data = conn.recv(1024)
         except (socket.timeout, OSError):
             data = b""
-        preview = data[:60].decode("utf-8", errors="replace") if data else ""
         self._emit(
             "decoy_redis_data",
             source_ip,
-            {"service": "redis", "port": self.port, "preview": preview, "version": ver},
+            {"service": "redis", "port": self.port, "bytes_received": len(data or b""), "version": ver},
         )
         if data and b"AUTH" in data.upper():
             conn.sendall(REDIS_ERR)
-            self._emit(
-                "http_login_capture" if False else "decoy_redis_auth",
-                source_ip,
-                {"service": "redis", "port": self.port, "preview": preview},
-            )
+            self._emit("decoy_redis_auth", source_ip, {"service": "redis", "port": self.port})
         else:
             try:
-                conn.sendall(f"$32\r\nredis_version:{ver}\r\n".encode() if False else REDIS_PONG)
+                conn.sendall(REDIS_PONG)
             except OSError:
                 pass
 
@@ -250,12 +250,7 @@ class FakeService:
         self._emit(
             "decoy_postgres_data",
             source_ip,
-            {
-                "service": "postgres",
-                "port": self.port,
-                "bytes_received": len(data) if data else 0,
-                "preview": (data[:40].hex() if data else ""),
-            },
+            {"service": "postgres", "port": self.port, "bytes_received": len(data) if data else 0},
         )
         try:
             conn.sendall(POSTGRES_AUTH)
@@ -270,11 +265,7 @@ class FakeService:
         self._emit(
             "decoy_elastic_data",
             source_ip,
-            {
-                "service": "elastic",
-                "port": self.port,
-                "bytes_received": len(data) if data else 0,
-            },
+            {"service": "elastic", "port": self.port, "bytes_received": len(data) if data else 0},
         )
         try:
             body = ELASTIC_BANNER
@@ -287,10 +278,9 @@ class FakeService:
         except OSError:
             pass
 
-    def start(self):
+    def start(self) -> bool:
         if self._running:
-            return
-        self._running = True
+            return True
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -298,12 +288,16 @@ class FakeService:
         except OSError as e:
             logger.error("Cannot bind %s on port %d: %s", self.name, self.port, e)
             self._running = False
-            return
+            return False
         self._sock.listen(16)
         self._sock.settimeout(1.0)
+        self._running = True
 
         def serve():
             while self._running:
+                if guardrails.listeners_paused():
+                    time.sleep(0.5)
+                    continue
                 try:
                     conn, addr = self._sock.accept()
                     threading.Thread(target=self._handle, args=(conn, addr), daemon=True).start()
@@ -318,7 +312,8 @@ class FakeService:
 
         self._thread = threading.Thread(target=serve, daemon=True)
         self._thread.start()
-        logger.info("Fake %s listening on %s:%d mode=%s", self.name, self.listen_addr, self.port, self.mode)
+        logger.info("Fake %s on %s:%d mode=%s", self.name, self.listen_addr, self.port, self.mode)
+        return True
 
     def stop(self):
         self._running = False
@@ -333,24 +328,28 @@ class ServiceManager:
     def __init__(
         self,
         ports: Dict[str, int],
-        listen_addr: str = "0.0.0.0",
+        listen_addr: str = "127.0.0.1",
         on_connect: Optional[Callable] = None,
         ssh_jail: bool = True,
         ssh_jail_timeout: int = 300,
+        https_enabled: bool = False,
     ):
         self.ports = ports
         self.listen_addr = listen_addr
         self.on_connect = on_connect
         self.ssh_jail = ssh_jail
         self.ssh_jail_timeout = ssh_jail_timeout
+        self.https_enabled = https_enabled
         self.services: List[Any] = []
         self._jail = None
+        self.failures: List[str] = []
 
     def deploy(self):
+        from .registry import REGISTRY, ServiceState
+
         _load_cosmetics()
         mapping = {
             "http": ("http", _http_response(HTTP_SERVER), "http_admin"),
-            "https": ("https", _http_response(HTTP_SERVER), "http_admin"),
             "mysql": ("mysql", MYSQL_GREETING, "banner"),
             "ftp": ("ftp", FTP_BANNER, "banner"),
             "rdp": ("rdp", RDP_BANNER, "banner"),
@@ -358,6 +357,10 @@ class ServiceManager:
             "postgres": ("postgres", POSTGRES_AUTH, "postgres"),
             "elastic": ("elastic", ELASTIC_BANNER, "elastic"),
         }
+        if self.https_enabled:
+            mapping["https"] = ("https", _http_response(HTTP_SERVER), "http_admin")
+        else:
+            REGISTRY.register("https", port=int(self.ports.get("https", 8443)), state=ServiceState.DISABLED, error="TLS not implemented")
 
         if "ssh" in self.ports:
             port = self.ports["ssh"]
@@ -375,32 +378,39 @@ class ServiceManager:
                         if jail.start():
                             self._jail = jail
                             self.services.append(jail)
-                            logger.info("SSH jail active on port %d", port)
+                            REGISTRY.register("ssh_jail", port=port, state=ServiceState.RUNNING, stop_fn=jail.stop)
                         else:
                             self._start_banner_ssh(port)
                     else:
                         self._start_banner_ssh(port)
                 except Exception as e:
                     logger.error("SSH jail error: %s", e)
+                    self.failures.append(f"ssh:{e}")
+                    REGISTRY.register("ssh_jail", port=port, state=ServiceState.FAILED, error=str(e)[:120])
                     self._start_banner_ssh(port)
             else:
                 self._start_banner_ssh(port)
 
         for key, port in self.ports.items():
-            if key == "ssh":
+            if key in ("ssh", "https") and (key == "ssh" or not self.https_enabled):
                 continue
             if key in mapping:
                 name, banner, mode = mapping[key]
                 svc = FakeService(name, port, banner, self.listen_addr, self.on_connect, mode=mode)
-                svc.start()
-                if svc._running:
+                if svc.start():
                     self.services.append(svc)
+                    REGISTRY.register(name, port=port, state=ServiceState.RUNNING, stop_fn=svc.stop)
+                else:
+                    self.failures.append(f"{name}:bind failed")
+                    REGISTRY.register(name, port=port, state=ServiceState.FAILED, error="bind failed")
 
     def _start_banner_ssh(self, port: int):
+        from .registry import REGISTRY, ServiceState
+
         svc = FakeService("ssh", port, SSH_BANNER, self.listen_addr, self.on_connect)
-        svc.start()
-        if svc._running:
+        if svc.start():
             self.services.append(svc)
+            REGISTRY.register("ssh", port=port, state=ServiceState.RUNNING, stop_fn=svc.stop)
 
     def stop_all(self):
         for svc in self.services:
@@ -418,12 +428,10 @@ class ServiceManager:
                 st = s.status()
                 if isinstance(st, dict):
                     out.append(st)
-                else:
-                    out.append({"name": getattr(s, "name", "?"), "port": getattr(s, "port", 0), "running": True})
-            else:
-                out.append({
-                    "name": getattr(s, "name", "?"),
-                    "port": getattr(s, "port", 0),
-                    "running": getattr(s, "_running", True),
-                })
+                    continue
+            out.append({
+                "name": getattr(s, "name", "?"),
+                "port": getattr(s, "port", 0),
+                "running": getattr(s, "_running", True),
+            })
         return out
