@@ -291,5 +291,5 @@ def verify_evidence_zip(zip_path: str) -> Tuple[bool, str]:
                 return False, f"manifest metadata mismatch: {field}"
 
         return True, "OK — manifest, SHA-256 and HMAC verified"
-    except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, zipfile.BadZipFile) as exc:
         return False, str(exc)[:200]
