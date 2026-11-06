@@ -5,7 +5,7 @@ from mirage import evidence
 
 
 def test_evidence_bundle_verifies_manifest_and_hmac(monkeypatch, tmp_path):
-    monkeypatch.setattr(evidence, "ensure_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(evidence, "ensure_data_dir", lambda cfg=None: tmp_path)
     monkeypatch.setattr(
         evidence,
         "load_config",
