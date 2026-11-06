@@ -63,7 +63,12 @@ def _pid_path() -> Path:
 
 
 def _on_event(event_type: str, source_ip: str = "", details: dict = None):
-    emit(event_type, source_ip, details or {}, severity="high")
+    """Use the event taxonomy's severity instead of labelling every event high."""
+    classification = classify_event(
+        {"event_type": event_type, "details": details or {}}
+    )
+    severity = classification.get("severity") or "medium"
+    emit(event_type, source_ip, details or {}, severity=severity)
 
 
 def _stop_all_managers():
