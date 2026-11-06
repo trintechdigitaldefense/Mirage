@@ -23,6 +23,7 @@ from .tarpit import TarpitManager
 from .dns_canary import DNSCanary
 from .telnet_jail import TelnetJail
 from .web_api import WebAPIDecoy
+from .dashboard import Dashboard
 from .alerts import emit
 from .report import generate_report
 from .intent import classify_event
@@ -50,6 +51,7 @@ _tarpit_mgr = None
 _dns_canary = None
 _telnet_jail = None
 _web_api = None
+_dashboard = None
 
 CHECKLIST_TEXT = """
 Mirage Client Deployment Checklist
@@ -73,10 +75,10 @@ def _on_event(event_type: str, source_ip: str = "", details: dict = None):
 
 def _stop_all_managers():
     global _service_mgr, _canary_mgr, _smb_mgr, _beacon_listener, _cloud_decoy
-    global _tarpit_mgr, _dns_canary, _telnet_jail, _web_api
+    global _tarpit_mgr, _dns_canary, _telnet_jail, _web_api, _dashboard
     for mgr in (
         _service_mgr, _canary_mgr, _smb_mgr, _beacon_listener, _cloud_decoy,
-        _tarpit_mgr, _dns_canary, _telnet_jail, _web_api,
+        _tarpit_mgr, _dns_canary, _telnet_jail, _web_api, _dashboard,
     ):
         if not mgr:
             continue
@@ -142,7 +144,7 @@ def cmd_checklist(_args):
 
 def cmd_deploy(args):
     global _service_mgr, _canary_mgr, _smb_mgr, _beacon_listener, _cloud_decoy
-    global _tarpit_mgr, _dns_canary, _telnet_jail, _web_api
+    global _tarpit_mgr, _dns_canary, _telnet_jail, _web_api, _dashboard
     cfg = load_config()
     init_db()
     auth_ref = cfg.get("authorization_ref", "")
@@ -239,6 +241,14 @@ def cmd_deploy(args):
             print(f"       cloud port {cfg.get('cloud_decoy_port', 9000)}")
         else:
             REGISTRY.register("cloud", port=int(cfg.get("cloud_decoy_port", 9000)), state=ServiceState.FAILED, error="bind failed")
+    if cfg.get("dashboard_enabled", False) or getattr(args, "dashboard", False):
+        dashboard_port = int(cfg.get("dashboard_port", 8787))
+        _dashboard = Dashboard(port=dashboard_port, listen_addr="127.0.0.1")
+        if _dashboard.start():
+            REGISTRY.register("dashboard", port=dashboard_port, state=ServiceState.RUNNING, stop_fn=_dashboard.stop)
+            print(f"       dashboard  http://127.0.0.1:{dashboard_port} (Bearer token required)")
+        else:
+            REGISTRY.register("dashboard", port=dashboard_port, state=ServiceState.FAILED, error="bind failed")
     try:
         site = register_site()
         print(f"[+] Mesh site {site.get('site_id')}")
@@ -466,7 +476,7 @@ def main():
     p = sub.add_parser("init"); p.add_argument("--org"); p.add_argument("--auth-ref"); p.add_argument("--sector"); p.add_argument("--beacon-url"); p.set_defaults(func=cmd_init)
     p = sub.add_parser("agree"); p.add_argument("--recipients"); p.add_argument("--channel", choices=["console", "webhook", "both"]); p.add_argument("--cadence", choices=["weekly", "monthly", "per_critical_event"]); p.add_argument("--evidence", choices=["on_request", "per_critical", "monthly"]); p.add_argument("--webhook"); p.set_defaults(func=cmd_agree)
     p = sub.add_parser("checklist"); p.set_defaults(func=cmd_checklist)
-    p = sub.add_parser("deploy"); p.add_argument("--force", action="store_true"); p.set_defaults(func=cmd_deploy)
+    p = sub.add_parser("deploy"); p.add_argument("--force", action="store_true"); p.add_argument("--dashboard", action="store_true", help="start the local operator dashboard"); p.set_defaults(func=cmd_deploy)
     p = sub.add_parser("status"); p.set_defaults(func=cmd_status)
     p = sub.add_parser("alerts"); p.add_argument("--recent", "-r", type=int, default=20); p.set_defaults(func=cmd_alerts)
     p = sub.add_parser("report"); p.add_argument("--daily", action="store_true"); p.add_argument("--hours", type=int); p.add_argument("--client", action="store_true"); p.add_argument("--story", action="store_true"); p.set_defaults(func=cmd_report)
