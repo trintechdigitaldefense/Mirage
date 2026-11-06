@@ -1,8 +1,8 @@
 """Mirage — Active Deception Platform by TrinTech Digital Defense
 
-v2.4 — Telnet sandbox, web API decoys, doc canaries, credential injection,
-MITRE SIEM stream (SSH jail + tarpit + DNS from 2.3)
+v2.5 — Security & reliability: credential redaction, accept-time guardrails,
+loopback-default bind, safe upgrades, DB indexes/retention.
 """
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 __author__ = "TrinTech Digital Defense"
