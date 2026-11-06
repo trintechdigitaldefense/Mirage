@@ -1,27 +1,25 @@
-"""Decoy Web Application API & Endpoint Generator.
-
-Low-interaction HTTP routes that mimic vulnerable management interfaces.
-Scanners (Nuclei, Nikto, crawlers) hitting these paths generate high-confidence alerts.
-"""
+"""Decoy Web Application API — no plaintext credential storage (v2.5)."""
 
 from __future__ import annotations
 
 import logging
 import socket
 import threading
-from typing import Callable, Dict, List, Optional, Tuple
+import time
+from typing import Callable, List, Optional, Tuple
 from urllib.parse import unquote
+
+from . import guardrails
+from .redaction import fingerprint
 
 logger = logging.getLogger("mirage.web_api")
 
-# path prefix -> (status, content-type, body)
 ROUTES: List[Tuple[str, int, str, bytes]] = [
     ("/api/v1/auth", 401, "application/json",
      b'{"error":"unauthorized","message":"Invalid credentials"}\n'),
     ("/api/v1/login", 401, "application/json",
      b'{"status":"fail","token":null}\n'),
-    ("/api/v1/users", 403, "application/json",
-     b'{"error":"forbidden"}\n'),
+    ("/api/v1/users", 403, "application/json", b'{"error":"forbidden"}\n'),
     ("/.env", 200, "text/plain",
      b"APP_KEY=base64:DECOY_KEY_DO_NOT_USE\nDB_PASSWORD=Pr0d_S3cure_2026!\n"
      b"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/DECOY\n"),
@@ -49,12 +47,10 @@ ROUTES: List[Tuple[str, int, str, bytes]] = [
 
 def _match_route(path: str) -> Optional[Tuple[int, str, bytes]]:
     path = path.split("?")[0].rstrip("/") or "/"
-    # exact then prefix
     for route, status, ctype, body in ROUTES:
         r = route.rstrip("/") or "/"
         if path == r or path.startswith(r + "/") or path == route:
             return status, ctype, body
-    # path traversal / sensitive probes
     low = path.lower()
     if any(x in low for x in ("../", ".git", "wp-config", "web.config", "id_rsa", "backup.sql")):
         return 403, "text/plain", b"Forbidden\n"
@@ -73,13 +69,25 @@ def _parse_request(data: bytes) -> Tuple[str, str, str]:
         return "GET", "/", ""
 
 
+def _credential_meta(body: str) -> dict:
+    """Username + fingerprint only — never store password values."""
+    meta = {"credential_probe": True, "password_present": False}
+    for part in body.replace("&", " ").split():
+        if "=" not in part:
+            continue
+        k, _, v = part.partition("=")
+        k = k.strip().lower()
+        if k in ("user", "username", "login", "log", "email") and v:
+            meta["username"] = v[:80]
+        if k in ("pass", "password", "passwd", "pwd") and v:
+            meta["password_present"] = True
+            meta["password_length"] = len(v)
+            meta["password_fingerprint"] = fingerprint(v)
+    return meta
+
+
 class WebAPIDecoy:
-    def __init__(
-        self,
-        port: int = 8081,
-        listen_addr: str = "0.0.0.0",
-        on_event: Optional[Callable] = None,
-    ):
+    def __init__(self, port: int = 8081, listen_addr: str = "127.0.0.1", on_event: Optional[Callable] = None):
         self.port = port
         self.listen_addr = listen_addr
         self.on_event = on_event
@@ -89,26 +97,23 @@ class WebAPIDecoy:
     def _emit(self, source_ip: str, method: str, path: str, status: int, extra: dict = None):
         if not self.on_event:
             return
-        details = {
-            "service": "web_api",
-            "method": method,
-            "path": path,
-            "status": status,
-            "port": self.port,
-        }
+        details = {"service": "web_api", "method": method, "path": path, "status": status, "port": self.port}
         if extra:
             details.update(extra)
         try:
-            self.on_event(
-                event_type="web_api_hit",
-                source_ip=source_ip,
-                details=details,
-            )
+            self.on_event(event_type="web_api_hit", source_ip=source_ip, details=details)
         except Exception:
             pass
 
     def _handle(self, conn: socket.socket, addr):
         source_ip = addr[0]
+        allowed, reason = guardrails.accept_allowed("web_api", source_ip)
+        if not allowed:
+            try:
+                conn.close()
+            except OSError:
+                pass
+            return
         try:
             conn.settimeout(5.0)
             data = conn.recv(8192)
@@ -119,42 +124,33 @@ class WebAPIDecoy:
             if matched:
                 status, ctype, body = matched
             else:
-                # default decoy portal
                 status, ctype, body = 200, "text/html", (
                     b"<!DOCTYPE html><html><body><h1>Internal Services</h1>"
                     b"<p>API documentation restricted.</p></body></html>"
                 )
             extra = {}
-            if method == "POST" and ("login" in path.lower() or "auth" in path.lower() or "wp-login" in path.lower()):
-                # capture submitted creds fragment
-                body_part = raw.split("\r\n\r\n", 1)[-1][:120] if "\r\n\r\n" in raw else ""
-                extra["post_preview"] = body_part
-                extra["credential_probe"] = True
+            if method == "POST" and any(x in path.lower() for x in ("login", "auth", "wp-login")):
+                body_part = raw.split("\r\n\r\n", 1)[-1] if "\r\n\r\n" in raw else ""
+                extra.update(_credential_meta(body_part[:500]))
                 if status == 200:
                     status = 401
                     body = b'{"error":"invalid_credentials"}\n'
                     ctype = "application/json"
-
             self._emit(source_ip, method, path, status, extra)
-
             if status == 302:
-                hdr = (
-                    f"HTTP/1.1 302 Found\r\nLocation: /wp-login.php\r\n"
-                    f"Content-Length: 0\r\nConnection: close\r\n\r\n"
-                ).encode()
-                conn.sendall(hdr)
+                conn.sendall(
+                    b"HTTP/1.1 302 Found\r\nLocation: /wp-login.php\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
             else:
                 resp = (
-                    f"HTTP/1.1 {status} X\r\n"
-                    f"Server: nginx/1.18.0\r\n"
-                    f"Content-Type: {ctype}\r\n"
-                    f"Content-Length: {len(body)}\r\n"
-                    f"Connection: close\r\n\r\n"
+                    f"HTTP/1.1 {status} X\r\nServer: nginx/1.18.0\r\nContent-Type: {ctype}\r\n"
+                    f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
                 ).encode() + body
                 conn.sendall(resp)
         except OSError:
             pass
         finally:
+            guardrails.session_release("web_api", source_ip)
             try:
                 conn.close()
             except OSError:
@@ -168,7 +164,7 @@ class WebAPIDecoy:
         try:
             self._sock.bind((self.listen_addr, self.port))
         except OSError as e:
-            logger.error("Web API decoy bind failed on %d: %s", self.port, e)
+            logger.error("Web API bind failed on %d: %s", self.port, e)
             return False
         self._sock.listen(16)
         self._sock.settimeout(1.0)
@@ -176,6 +172,9 @@ class WebAPIDecoy:
 
         def serve():
             while self._running:
+                if guardrails.listeners_paused():
+                    time.sleep(0.5)
+                    continue
                 try:
                     conn, addr = self._sock.accept()
                     threading.Thread(target=self._handle, args=(conn, addr), daemon=True).start()
@@ -189,7 +188,7 @@ class WebAPIDecoy:
                 pass
 
         threading.Thread(target=serve, daemon=True).start()
-        logger.info("Web API decoy on %s:%d (%d routes)", self.listen_addr, self.port, len(ROUTES))
+        logger.info("Web API decoy on %s:%d", self.listen_addr, self.port)
         return True
 
     def stop(self):
