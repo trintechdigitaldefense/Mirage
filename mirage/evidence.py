@@ -44,7 +44,7 @@ def _sha256_text(text: str) -> str:
 
 
 def keys_dir() -> Path:
-    d = ensure_data_dir() / "keys"
+    d = ensure_data_dir(load_config()) / "keys"
     d.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(d, 0o700)
@@ -54,14 +54,17 @@ def keys_dir() -> Path:
 
 
 def ensure_signing_key() -> Path:
-    """Create HMAC key outside evidence/ if missing."""
+    """Create the evidence HMAC key atomically outside evidence/ if missing."""
     path = keys_dir() / "evidence_hmac.key"
-    if not path.exists():
-        path.write_bytes(secrets.token_bytes(32))
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
+    try:
+        with path.open("xb") as stream:
+            stream.write(secrets.token_bytes(32))
+    except FileExistsError:
+        pass
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
     return path
 
 
