@@ -1,17 +1,14 @@
-"""Fake DNS canary records — log lookups for decoy internal names.
-
-Lightweight UDP DNS listener on a non-privileged port (default 5353).
-Any query for configured canary hostnames is logged as high-confidence recon.
-Does not act as a real recursive resolver for the network.
-"""
+"""Fake DNS canary records — Stage 2 guardrails on UDP path."""
 
 from __future__ import annotations
 
 import logging
 import socket
-import struct
 import threading
+import time
 from typing import Callable, List, Optional, Set
+
+from . import guardrails
 
 logger = logging.getLogger("mirage.dns_canary")
 
@@ -25,7 +22,6 @@ DEFAULT_CANARIES = [
 
 
 def _parse_qname(data: bytes, offset: int = 12) -> tuple:
-    """Parse DNS QNAME starting at offset. Returns (name, next_offset)."""
     labels = []
     pos = offset
     try:
@@ -34,7 +30,7 @@ def _parse_qname(data: bytes, offset: int = 12) -> tuple:
             if length == 0:
                 pos += 1
                 break
-            if length & 0xC0 == 0xC0:  # compression pointer — stop
+            if length & 0xC0 == 0xC0:
                 pos += 2
                 break
             pos += 1
@@ -46,16 +42,12 @@ def _parse_qname(data: bytes, offset: int = 12) -> tuple:
 
 
 def _build_nxdomain(query: bytes) -> bytes:
-    """Minimal NXDOMAIN response mirroring the query header/id."""
     if len(query) < 12:
         return b""
-    # Copy ID, set response + NXDOMAIN flags, zero counts except QDCOUNT
     hdr = bytearray(query[:12])
-    hdr[2] = 0x81  # QR + RD
-    hdr[3] = 0x83  # RA + NXDOMAIN
-    # Keep QDCOUNT; zero AN/NS/AR
+    hdr[2] = 0x81
+    hdr[3] = 0x83
     hdr[6:12] = b"\x00\x00\x00\x00\x00\x00"
-    # Append original question section if present
     return bytes(hdr) + query[12:]
 
 
@@ -63,7 +55,7 @@ class DNSCanary:
     def __init__(
         self,
         port: int = 5353,
-        listen_addr: str = "0.0.0.0",
+        listen_addr: str = "127.0.0.1",
         canary_names: Optional[List[str]] = None,
         on_event: Optional[Callable] = None,
     ):
@@ -77,39 +69,43 @@ class DNSCanary:
         self._thread: Optional[threading.Thread] = None
 
     def _handle(self, data: bytes, addr):
-        name, _ = _parse_qname(data)
-        if not name:
-            return
         source_ip = addr[0]
-        matched = name in self.canaries or any(
-            name.endswith("." + c) or name == c for c in self.canaries
-        )
-        # Log all queries to canary zone OR exact matches; also log if substring matches key tokens
-        hit = matched or any(
-            token in name
-            for token in ("dev-db", "backup-vault", "payroll-sql", "vpn-gateway", "ad-backup")
-        )
-        if hit and self.on_event:
-            try:
-                self.on_event(
-                    event_type="dns_canary_lookup",
-                    source_ip=source_ip,
-                    details={
-                        "service": "dns_canary",
-                        "qname": name,
-                        "matched": matched,
-                        "port": self.port,
-                    },
-                )
-            except Exception:
-                pass
-        # Always answer NXDOMAIN so we are not a real resolver
+        allowed, reason = guardrails.accept_allowed("dns_canary", source_ip)
+        if not allowed:
+            return
         try:
-            resp = _build_nxdomain(data)
-            if resp and self._sock:
-                self._sock.sendto(resp, addr)
-        except OSError:
-            pass
+            name, _ = _parse_qname(data)
+            if not name:
+                return
+            matched = name in self.canaries or any(
+                name.endswith("." + c) or name == c for c in self.canaries
+            )
+            hit = matched or any(
+                token in name
+                for token in ("dev-db", "backup-vault", "payroll-sql", "vpn-gateway", "ad-backup")
+            )
+            if hit and self.on_event:
+                try:
+                    self.on_event(
+                        event_type="dns_canary_lookup",
+                        source_ip=source_ip,
+                        details={
+                            "service": "dns_canary",
+                            "qname": name,
+                            "matched": matched,
+                            "port": self.port,
+                        },
+                    )
+                except Exception:
+                    pass
+            try:
+                resp = _build_nxdomain(data)
+                if resp and self._sock:
+                    self._sock.sendto(resp, addr)
+            except OSError:
+                pass
+        finally:
+            guardrails.session_release("dns_canary", source_ip)
 
     def start(self) -> bool:
         if self._running:
@@ -126,6 +122,9 @@ class DNSCanary:
 
         def serve():
             while self._running:
+                if guardrails.listeners_paused():
+                    time.sleep(0.5)
+                    continue
                 try:
                     data, addr = self._sock.recvfrom(512)
                     if data:
@@ -141,12 +140,7 @@ class DNSCanary:
 
         self._thread = threading.Thread(target=serve, daemon=True)
         self._thread.start()
-        logger.info(
-            "DNS canary on %s:%d names=%s",
-            self.listen_addr,
-            self.port,
-            sorted(self.canaries)[:5],
-        )
+        logger.info("DNS canary on %s:%d", self.listen_addr, self.port)
         return True
 
     def stop(self):
