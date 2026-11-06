@@ -1,14 +1,14 @@
-"""Alert emission — redacted, enriched with session/event ids, token lifecycle."""
+"""Alert emission with redaction, durable event logging and notification cooldowns."""
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Optional
 
 from .config import load_config
 from .db import log_event, is_in_cooldown, set_cooldown
-from .redaction import redact_details, contains_secret
+from .redaction import redact_details
 from .sessions import enrich_event_fields
 from .tokens import record_hit
 from . import guardrails
@@ -22,35 +22,34 @@ def emit(
     details: Optional[dict] = None,
     severity: str = "high",
 ) -> None:
+    """Persist every event; cooldowns affect notifications, never the audit stream."""
     cfg = load_config()
     auth_ref = cfg.get("authorization_ref") or ""
 
-    # Session + schema enrichment before redaction
-    details = enrich_event_fields(event_type, source_ip, details or {})
+    enriched = enrich_event_fields(event_type, source_ip, details or {})
 
-    # Honeytoken lifecycle
+    # Record beacon lifecycle independently of notification delivery.
     if event_type == "beacon_hit":
-        tid = (details.get("token_id") or "").strip()
-        if tid:
-            record_hit(tid, source_ip=source_ip, path=details.get("path") or "")
+        token_id = (enriched.get("token_id") or "").strip()
+        if token_id:
+            record_hit(
+                token_id,
+                source_ip=source_ip,
+                path=enriched.get("path") or "",
+            )
 
-    # Guardrail rate check for logging path
+    # A tripped breaker suppresses operator notifications, not event evidence.
+    breaker_open = False
     if cfg.get("guardrails_enabled", True):
-        ok, reason = guardrails.check_source(source_ip or "unknown")
-        if not ok and reason == "circuit_open":
-            logger.warning("Alert suppressed — circuit open (%s)", source_ip)
-            return
+        try:
+            allowed, reason = guardrails.check_source(source_ip or "unknown")
+            breaker_open = not allowed and reason == "circuit_open"
+        except Exception:
+            logger.exception("Guardrail alert check failed")
 
-    safe = redact_details(details)
-    # Cooldown per event_type+source
-    cd_key = f"{event_type}:{source_ip}"
-    cd_sec = int(cfg.get("alert_cooldown_sec") or 30)
-    if cd_sec > 0 and is_in_cooldown(cd_key, cd_sec):
-        logger.debug("Cooldown in cooldown: %s", cd_key)
-    else:
-        if cd_sec > 0:
-            set_cooldown(cd_key)
+    safe = redact_details(enriched)
 
+    # Persist before any best-effort external notification.
     log_event(
         event_type=event_type,
         source_ip=source_ip,
@@ -59,17 +58,36 @@ def emit(
         authorization_ref=auth_ref,
     )
 
-    # Console
+    cooldown_key = f"{event_type}:{source_ip}"
+    cooldown_seconds = int(
+        cfg.get("alert_cooldown_seconds", cfg.get("alert_cooldown_sec", 30)) or 0
+    )
+    cooldown_active = False
+    if cooldown_seconds > 0:
+        cooldown_active = is_in_cooldown(cooldown_key, cooldown_seconds)
+        if not cooldown_active:
+            set_cooldown(cooldown_key)
+
+    notifications_allowed = not cooldown_active and not breaker_open
+    if cooldown_active:
+        logger.debug("Operator notification cooldown active: %s", cooldown_key)
+    if breaker_open:
+        logger.warning("Operator notification suppressed — circuit open (%s)", source_ip)
+
     channel = (cfg.get("alert_channel") or "console").lower()
     line = f"[MIRAGE] {event_type} src={source_ip or 'n/a'} sev={severity}"
-    if channel in ("console", "both"):
+
+    if notifications_allowed and channel in ("console", "both"):
         print(line)
 
-    # Webhook — never send unredacted secrets
-    if channel in ("webhook", "both") and cfg.get("webhook_url"):
+    if (
+        notifications_allowed
+        and channel in ("webhook", "both")
+        and cfg.get("webhook_url")
+    ):
         _post_webhook(cfg["webhook_url"], event_type, source_ip, safe, severity)
 
-    # SIEM stream
+    # SIEM is an audit/integration stream: it receives every redacted event.
     if cfg.get("mitre_siem_stream", True):
         _append_siem(event_type, source_ip, safe, severity)
 
@@ -93,9 +111,10 @@ def _post_webhook(url: str, event_type: str, source_ip: str, details: dict, seve
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        urllib.request.urlopen(req, timeout=5)
-    except Exception as e:
-        logger.warning("Webhook failed (non-fatal): %s", e)
+        with urllib.request.urlopen(req, timeout=5) as response:
+            response.read()
+    except Exception as exc:
+        logger.warning("Webhook failed (non-fatal): %s", exc)
 
 
 def _append_siem(event_type: str, source_ip: str, details: dict, severity: str):
@@ -109,7 +128,7 @@ def _append_siem(event_type: str, source_ip: str, details: dict, severity: str):
             "severity": severity,
             "details": details,
         }
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(row, default=str) + "\n")
-    except Exception as e:
-        logger.debug("SIEM append failed: %s", e)
+        with open(path, "a", encoding="utf-8") as stream:
+            stream.write(json.dumps(row, default=str) + "\n")
+    except Exception as exc:
+        logger.warning("SIEM append failed (non-fatal): %s", exc)
